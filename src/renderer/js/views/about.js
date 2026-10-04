@@ -176,7 +176,7 @@ export function renderAbout(host) {
             : 'The terms EnvServer is released under.'
         ),
         locked
-          ? h('button.btn.btn--primary.btn--sm', { type: 'button', onClick: accept }, icon('check'), 'I agree')
+          ? h('button.btn.btn--primary.btn--sm', { type: 'button', onClick: accept }, icon('check'), 'I understand and agree')
           : h(
               'button.btn.btn--sm.btn--ghost',
               {
@@ -193,10 +193,11 @@ export function renderAbout(host) {
                 },
               },
               icon('refresh'),
-              'Withdraw'
+              'Withdraw agreement'
             )
       )
-    )
+    ),
+    termsBody({ locked })
   );
 }
 
