@@ -184,7 +184,7 @@ async function download(url, dest, opts = {}) {
         resumeFrom = 0;
       }
 
-      const headers = { 'user-agent': USER_AGENT };
+      const headers = { 'user-agent': USER_AGENT, ...(extraHeaders || {}) };
       if (resumeFrom) headers.range = `bytes=${resumeFrom}-`;
 
       // one controller per attempt: caller cancellation + stall watchdog

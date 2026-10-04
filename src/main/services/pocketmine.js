@@ -170,6 +170,7 @@ async function install({ serverId, mcVersion, onProgress = null, signal = null }
     expectedSize: chosen.size || null,
     signal,
     onProgress,
+    headers: { accept: 'application/octet-stream' },
   });
 
   return { skipped: false, size: paths.sizeOf(target), file: target, build: tag };
