@@ -518,7 +518,64 @@ test('Bedrock version lists sort numerically, not as strings', () => {
   assert.strictEqual(bedrock.compareVersions('1.21.1.0', '1.21.1.0'), 0);
 });
 
-test('the Bedrock version list is read out of the download page markup', () => {
+test('the Bedrock version list comes from Mojang\'s download-links API', () => {
+  // A verbatim response from
+  // https://net-secondary.web.minecraft-services.net/api/v1.0/download/links
+  //
+  // It replaced scraping https://www.minecraft.net/en-us/download/server/bedrock,
+  // which cannot work: that page renders its links with JavaScript and the
+  // served HTML contains no bedrock-server-*.zip at all, so the scraper always
+  // returned an empty list and the version dropdown was always empty.
+  const payload = {
+    result: {
+      links: [
+        { downloadType: 'serverBedrockWindows', downloadUrl: 'https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.52.3.zip' },
+        { downloadType: 'serverBedrockLinux', downloadUrl: 'https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.26.52.3.zip' },
+        { downloadType: 'serverBedrockPreviewWindows', downloadUrl: 'https://www.minecraft.net/bedrockdedicatedserver/bin-win-preview/bedrock-server-1.26.60.29.zip' },
+        { downloadType: 'serverBedrockPreviewLinux', downloadUrl: 'https://www.minecraft.net/bedrockdedicatedserver/bin-linux-preview/bedrock-server-1.26.60.29.zip' },
+        { downloadType: 'serverJar', downloadUrl: 'https://piston-data.mojang.com/v1/objects/33680f5f/server.jar' },
+      ],
+    },
+  };
+
+  const got = bedrock.parseLinks(payload);
+  assert.strictEqual(got.stable, '1.26.52.3');
+  assert.strictEqual(got.preview, '1.26.60.29');
+  // both windows builds are installable, neither linux build is
+  assert.strictEqual(Object.keys(got.urls).length, 2);
+  // the preview URL is kept whole: bin-win/bedrock-server-<preview>.zip is a 404
+  assert.ok(got.urls['1.26.60.29'].includes('bin-win-preview/'), got.urls['1.26.60.29']);
+  assert.strictEqual(bedrock.urlFor('1.26.52.3', got.urls), got.urls['1.26.52.3']);
+  // and an unknown version still gets a sane stable-path guess rather than undefined
+  assert.strictEqual(bedrock.urlFor('1.20.0.0', got.urls), `${bedrock.ZIP_BASE}bedrock-server-1.20.0.0.zip`);
+});
+
+test('a download-links answer with no Bedrock build in it is reported, not ignored', () => {
+  // Java-only, or a shape Mojang changed. Both mean "EnvServer cannot tell you
+  // which versions exist", which is not the same as a network failure and has a
+  // different fix, so neither is allowed to look like a successful empty list.
+  assert.strictEqual(bedrock.parseLinks({ result: { links: [{ downloadType: 'serverJar', downloadUrl: 'https://x/server.jar' }] } }), null);
+  assert.strictEqual(bedrock.parseLinks({ result: {} }), null);
+  assert.strictEqual(bedrock.parseLinks(null), null);
+  assert.strictEqual(bedrock.parseLinks('<html>not json</html>'), null);
+});
+
+test('a failed Bedrock version load says which host to unblock, not "request failed"', () => {
+  // The dropdown being empty is only actionable if the message names the thing to
+  // unblock, so the host is in every one of these.
+  const dns = bedrock.friendly(new Error('getaddrinfo ENOTFOUND net-secondary.web.minecraft-services.net'));
+  assert.ok(/net-secondary\.web\.minecraft-services\.net/.test(dns), dns);
+  const stalled = bedrock.friendly(new Error('socket hang up'));
+  assert.ok(/did not answer in time/.test(stalled), stalled);
+  assert.ok(/net-secondary\.web\.minecraft-services\.net/.test(stalled), stalled);
+  const refused = bedrock.friendly(new Error('HTTP 403 for https://net-secondary.web.minecraft-services.net/api/v1.0/download/links'));
+  assert.ok(/refused/.test(refused), refused);
+  // an Error with an empty message must not be reported as the word "Error"
+  const nameless = bedrock.friendly(new Error(''));
+  assert.ok(nameless.length > 20 && nameless !== 'Error', nameless);
+});
+
+test('Bedrock version numbers are found in any text, newest first', () => {
   const html = `
     <a href="/bedrockdedicatedserver/bin-win/bedrock-server-1.21.1.0.zip">win</a>
     <a href="/bedrockdedicatedserver/bin-win/bedrock-server-1.21.1.10.zip">win</a>

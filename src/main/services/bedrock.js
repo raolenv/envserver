@@ -10,28 +10,63 @@ const zip = require('./zip');
 /**
  * Mojang's official Bedrock Dedicated Server, for Windows.
  *
- *   GET https://www.minecraft.net/en-us/download/server/bedrock
- *   GET https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-<version>.zip
+ *   GET  https://net-secondary.web.minecraft-services.net/api/v1.0/download/links
+ *   GET  <downloadUrl from that response>
  *
- * There is no manifest API for Bedrock the way piston-meta serves Java, and no
- * JSON listing of the published zips. The download page does embed the full set
- * of `bedrock-server-<version>.zip` links in its markup, and that page is the
- * only thing that has ever been authoritative about which versions exist - so it
- * is what this reads.
+ * **Where the version list comes from, and why it is this URL.**
+ *
+ * The obvious thing to scrape is the download page,
+ * `https://www.minecraft.net/en-us/download/server/bedrock`, and that is what an
+ * earlier version of this file did. It cannot work: the page is an AEM shell
+ * whose download card is rendered by a JavaScript component, and the zip links
+ * are not in the served HTML. Fetching it returns ~390 KB with zero
+ * occurrences of `bedrock-server-*.zip` in it, so the scraper always returned
+ * an empty list and the version dropdown was always empty.
+ *
+ * The same page's component calls, in its own words,
+ * `mc.propertyUtils.coreServices().serverDownloadLatest()` and
+ * `serverDownload()`, which resolve to `window.MinecraftUser.getLatestVersion`
+ * and `.getDownloadLinks` - i.e.
+ *
+ *   GET /api/v1.0/download/latest   -> {"result":"26.3"}
+ *   GET /api/v1.0/download/links    -> {"result":{"links":[
+ *         {"downloadType":"serverBedrockWindows",       "downloadUrl":".../bin-win/bedrock-server-1.26.52.3.zip"},
+ *         {"downloadType":"serverBedrockLinux",         "downloadUrl":".../bin-linux/bedrock-server-1.26.52.3.zip"},
+ *         {"downloadType":"serverBedrockPreviewWindows","downloadUrl":".../bin-win-preview/bedrock-server-1.26.60.29.zip"},
+ *         {"downloadType":"serverBedrockPreviewLinux",  "downloadUrl":".../bin-linux-preview/bedrock-server-1.26.60.29.zip"},
+ *         {"downloadType":"serverJar",                  "downloadUrl":"https://piston-data.mojang.com/.../server.jar"}]}}
+ *
+ * That is the real source, it answers 200 to an ordinary `EnvServer/1.2.0`
+ * User-Agent with no browser impersonation, and it is what Mojang's own page
+ * renders from. It names the current stable and current preview build and no
+ * history, so every version ever seen is merged into the disk cache and kept:
+ * old zips are never deleted from Mojang's bucket, so an old version stays
+ * installable for as long as the app remembers it.
+ *
+ * The URLs are used verbatim rather than rebuilt from the version number,
+ * because preview builds live under `bin-win-preview/` and asking for
+ * `bin-win/bedrock-server-<preview>.zip` is a 404.
  *
  * Every release is a zip of native binaries, not a jar: there is no JVM, no
  * `-Xmx`, and no `eula.txt`. The server starts when `bedrock_server.exe` runs.
- * Accepted size is 19132 (Bedrock's UDP port), which the config view already
- * handles as an ordinary property.
+ * Accepted port is 19132 (Bedrock's UDP port).
  */
 
-const PAGE_URL = 'https://www.minecraft.net/en-us/download/server/bedrock';
+const API_LINKS = 'https://net-secondary.web.minecraft-services.net/api/v1.0/download/links';
+/** The same host, for error messages: a person can block or allow a host, not a path. */
+const API_HOST = 'net-secondary.web.minecraft-services.net';
 const ZIP_BASE = 'https://www.minecraft.net/bedrockdedicatedserver/bin-win/';
 const PAGE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 const DEFAULT_PORT = 19132;
 
+/** The two download types that are a Windows Bedrock server. */
+const STABLE_LINK = 'serverBedrockWindows';
+const PREVIEW_LINK = 'serverBedrockPreviewWindows';
+
 /** `bedrock-server-1.21.1.0.zip` -> `1.21.1.0`. */
-const ZIP_RE = /bedrock-server-(\d+(?:\.\d+)+)\.zip/gi;
+const ZIP_RE = /bedrock-server-(\d+(?:\.\d+)+)\.zip/;
+
+/* --------------------------------- cache -------------------------------- */
 
 function cacheAge(file) {
   try {
@@ -44,38 +79,44 @@ function cacheAge(file) {
 async function readCache(file) {
   try {
     const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
-    if (parsed && Date.now() - Number(parsed.at) < Number(parsed.ttl)) return parsed.data;
+    if (parsed && Array.isArray(parsed.data?.versions)) return parsed;
   } catch {
     /* no usable cache */
   }
   return null;
 }
 
-async function writeCache(file, data, ttl) {
+async function writeCache(file, data) {
   try {
     await fsp.mkdir(path.dirname(file), { recursive: true });
-    await fsp.writeFile(file, JSON.stringify({ at: Date.now(), ttl, data }), 'utf8');
+    await fsp.writeFile(file, JSON.stringify({ at: Date.now(), ttl: PAGE_TTL, data }), 'utf8');
   } catch (err) {
     console.warn('[bedrock] could not write cache', file, err.message);
   }
 }
 
+/* -------------------------------- parsing -------------------------------- */
+
 /**
- * Turn the download page into a version list, newest first.
+ * Pull every Bedrock version out of anything containing a zip URL.
  *
- * @param {string} html
+ * Kept deliberately tolerant - it is fed a JSON payload, a URL, or a whole
+ * response body depending on the caller, and matching one known shape is what
+ * made this file fragile in the first place.
+ *
+ * @param {string} text
  * @returns {string[]}
  */
-function parseVersions(html) {
+function parseVersions(text) {
   const seen = new Set();
   const out = [];
-  for (const m of String(html || '').matchAll(ZIP_RE)) {
+  for (const m of String(text || '').matchAll(new RegExp(ZIP_RE, 'gi'))) {
     const v = m[1];
     if (seen.has(v)) continue;
     seen.add(v);
     out.push(v);
   }
-  // 1.21.1.10 sorts after 1.21.1.9 as text but is older, so the segments are
+  // 1.21.1.10 sorts after 1.21.1.9 as text but is newer, so the segments are
   // compared numerically - and reversed, because every version list in this app
   // is newest first and the create form puts the default at the top.
   return out.sort((a, b) => compareVersions(b, a));
@@ -94,42 +135,109 @@ function compareVersions(a, b) {
 }
 
 /**
- * Every published Bedrock Dedicated Server version, newest first.
+ * Read the download-links payload into what this app needs.
  *
- * @returns {Promise<{versions:Array<string>, error:string|null, cached:boolean, source:string}>}
+ * Unknown shapes come back as `null` rather than throwing, so the caller can
+ * say "Mojang answered, but not with anything about Bedrock" - which is a
+ * different problem from "Mojang did not answer" and has a different fix.
+ *
+ * @param {any} payload the parsed JSON
+ * @returns {{stable:string, preview:string, urls:Record<string,string>}|null}
+ */
+function parseLinks(payload) {
+  const links = payload?.result?.links;
+  if (!Array.isArray(links)) return null;
+
+  const urls = {};
+  let stable = '';
+  let preview = '';
+
+  for (const link of links) {
+    const type = String(link?.downloadType || '');
+    if (type !== STABLE_LINK && type !== PREVIEW_LINK) continue;
+    const url = String(link?.downloadUrl || '');
+    const m = url.match(ZIP_RE);
+    if (!m) continue;
+    // the URL is kept whole: preview builds are served from another prefix
+    urls[m[1]] = url;
+    if (type === STABLE_LINK) stable = m[1];
+    else preview = m[1];
+  }
+
+  if (!stable && !preview) return null;
+  return { stable, preview, urls };
+}
+
+/* ------------------------------- version list ---------------------------- */
+
+/**
+ * Every Bedrock version EnvServer knows about, newest first.
+ *
+ * @returns {Promise<{versions:string[], preview:string[], error:string|null,
+ *                    cached:boolean, source:string, urls:Record<string,string>}>}
  */
 async function listVersions({ refresh = false, signal = null } = {}) {
   const file = paths.cacheFile('bedrock-versions.json');
 
   if (!refresh) {
     const hit = await readCache(file);
-    if (hit) return { versions: hit, error: null, cached: true, source: 'cache' };
+    // `shape` wants the payload, not the envelope: handing it the envelope is
+    // how a cache that plainly contains two versions reads back as none
+    if (hit && Date.now() - hit.at < (hit.ttl || PAGE_TTL)) {
+      return { ...shape(hit.data), error: null, cached: true, source: 'cache' };
+    }
   }
 
-  let html;
+  let payload = null;
+  let failure = null;
   try {
-    html = await net.getText(PAGE_URL, { signal, retries: 2, timeout: 45_000 });
+    payload = await net.getJson(API_LINKS, { signal, retries: 3, timeout: 30_000 });
   } catch (err) {
+    failure = err;
+  }
+
+  const fresh = payload ? parseLinks(payload) : null;
+
+  if (!fresh) {
     const stale = await readCache(file);
     if (stale) {
-      console.warn('[bedrock] using stale version list -', err.message);
-      return { versions: stale, error: friendly(err), cached: true, source: 'stale-cache' };
+      const why = failure ? friendly(failure) : 'the answer listed no Bedrock server download';
+      console.warn('[bedrock] using the remembered version list -', why);
+      return { ...shape(stale.data), error: `${why} - showing the versions EnvServer saw last time`, cached: true, source: 'stale-cache' };
     }
-    return { versions: [], error: friendly(err), cached: false, source: 'network' };
-  }
-
-  const versions = parseVersions(html);
-  if (!versions.length) {
     return {
       versions: [],
-      error: 'the Mojang download page loaded but listed no Bedrock server zips - EnvServer cannot tell which versions exist',
+      preview: [],
+      urls: {},
+      error: failure
+        ? friendly(failure)
+        : 'Mojang\'s download service answered but listed no Bedrock server build, so EnvServer cannot tell you which versions exist',
       cached: false,
       source: 'network',
     };
   }
 
-  await writeCache(file, versions, PAGE_TTL);
-  return { versions, error: null, cached: false, source: 'network' };
+  // merge: never forget a version, because Mojang only names the current two
+  const previous = (await readCache(file))?.data;
+  const urls = { ...(previous?.urls || {}), ...fresh.urls };
+  const versions = parseVersions(`${Object.keys(urls).map((v) => `bedrock-server-${v}.zip`).join('\n')}`);
+
+  const data = {
+    versions,
+    preview: fresh.preview ? [fresh.preview] : [],
+    stable: fresh.stable,
+    urls,
+  };
+  await writeCache(file, data);
+
+  return { ...shape(data), error: null, cached: false, source: 'network' };
+}
+
+/** Normalise the cached record into what callers are promised. */
+function shape(data) {
+  const versions = Array.isArray(data?.versions) ? data.versions.slice() : [];
+  const preview = Array.isArray(data?.preview) ? data.preview.filter((v) => versions.includes(v)) : [];
+  return { versions, preview, urls: data?.urls || {} };
 }
 
 /**
@@ -137,22 +245,31 @@ async function listVersions({ refresh = false, signal = null } = {}) {
  *
  * Mojang publishes exactly one archive per Bedrock version - there are no
  * numbered builds to choose between - so this synthesises a single entry rather
- * than pretending the Versions view has something to pick.
+ * than pretending the Versions view has something to pick. The URL comes from
+ * the remembered list rather than being rebuilt, because preview builds are
+ * served from a different prefix and the rebuilt one 404s.
  */
 async function listBuilds(mcVersion, { refresh = false, signal = null } = {}) {
   if (!mcVersion) return [];
   const list = await listVersions({ refresh, signal });
-  if (list.error || !list.versions.includes(mcVersion)) return [];
+  if (!list.versions.includes(mcVersion)) return [];
   return [
     {
       build: mcVersion,
       time: '',
-      channel: 'bedrock',
-      url: `${ZIP_BASE}bedrock-server-${mcVersion}.zip`,
+      channel: list.preview.includes(mcVersion) ? 'bedrock-preview' : 'bedrock',
+      url: urlFor(mcVersion, list.urls),
       size: 0,
       sha256: '',
     },
   ];
+}
+
+/** The remembered URL, or the stable one rebuilt. Never a preview guess. */
+function urlFor(version, urls) {
+  const known = urls?.[version];
+  if (known) return known;
+  return `${ZIP_BASE}bedrock-server-${version}.zip`;
 }
 
 /** No Java, so there is nothing to report and nothing to match against. */
@@ -174,13 +291,18 @@ function meta() {
  *
  * @returns {Promise<{skipped:boolean, size:number, file:string, build:string}>}
  */
-async function install({ serverId, mcVersion, onProgress = null, signal = null }) {
+async function install({ serverId, mcVersion, build = null, onProgress = null, signal = null }) {
   const id = paths.segment(serverId);
   const dir = paths.serverDir(id);
-  const version = String(mcVersion || '').trim();
+  // the renderer may pass the version or the build record; both are accepted
+  // because the record is the only thing that knows the real URL
+  const record = build && typeof build === 'object' ? build : null;
+  const version = String(record?.build || mcVersion || (typeof build === 'string' ? build : '') || '').trim();
   if (!version) throw new Error('pick a Bedrock version first');
 
-  const url = `${ZIP_BASE}bedrock-server-${version}.zip`;
+  const list = await listVersions({ signal });
+  const url = record?.url || urlFor(version, list.urls);
+
   const archive = path.join(paths.tmpDir(), `bedrock-server-${version}.zip`);
 
   await fsp.mkdir(paths.tmpDir(), { recursive: true });
@@ -249,17 +371,30 @@ async function remove(serverId) {
   return { ok: true, removed };
 }
 
-/** Turn a network failure into something a person can act on. */
+/**
+ * Turn a network failure into something a person can act on.
+ *
+ * The host is named in every message. When this fails the person needs to know
+ * *what* to unblock - a DNS failure, a timeout and a refused request have three
+ * different fixes, and "the request failed" tells them none of them.
+ *
+ * @param {any} err
+ * @returns {string}
+ */
 function friendly(err) {
-  const message = String(err?.message || err || '');
+  // an Error with no message stringifies to "Error", which is not an answer
+  const message = (err instanceof Error ? err.message : String(err ?? '')).trim();
+  const where = ` (${API_HOST})`;
   if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(message)) {
-    return 'could not reach www.minecraft.net - check your internet connection or firewall';
+    return `could not reach Mojang's download service${where} - check your internet connection, DNS or firewall`;
   }
-  if (/timeout|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message)) {
-    return 'www.minecraft.net timed out - Mojang is slow or blocked on this network, try again in a moment';
+  if (/timeout|ETIMEDOUT|ECONNRESET|socket hang up|transfer stalled/i.test(message)) {
+    return `Mojang's download service${where} did not answer in time - it is slow or blocked on this network, try again in a moment`;
   }
-  if (/HTTP 4\d\d/.test(message)) return `Mojang refused the request (${message.split(' for ')[0]})`;
-  return message || 'the Bedrock download failed for an unknown reason';
+  if (/HTTP 4\d\d/.test(message)) return `Mojang's download service${where} refused the request (${message.split(' for ')[0]})`;
+  return message
+    ? `${message} (while asking Mojang's download service${where})`
+    : `the Bedrock version list at ${API_HOST} could not be loaded, and EnvServer was not told why`;
 }
 
 /** The port Bedrock listens on, which is not 25565. */
@@ -268,9 +403,12 @@ function defaultPort() {
 }
 
 module.exports = {
-  PAGE_URL,
+  API_LINKS,
+  API_HOST,
   ZIP_BASE,
   DEFAULT_PORT,
+  STABLE_LINK,
+  PREVIEW_LINK,
   listVersions,
   listBuilds,
   install,
@@ -278,7 +416,9 @@ module.exports = {
   requiredJava,
   meta,
   parseVersions,
+  parseLinks,
   compareVersions,
+  urlFor,
   defaultPort,
   friendly,
 };

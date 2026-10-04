@@ -1,7 +1,7 @@
 {
   "name": "envserver",
   "productName": "EnvServer",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "EnvServer - local Minecraft server manager for Windows (Paper, Folia, Purpur, Vanilla, Spigot, CraftBukkit, PocketMine-MP, Bedrock Dedicated Server)",
   "author": {
     "name": "RaolENV",

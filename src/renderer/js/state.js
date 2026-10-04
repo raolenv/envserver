@@ -410,6 +410,10 @@ async function fetchVersions(softwareId, refresh = false) {
     // the Versions view has to say which of the two it is
     canInstall: res?.canInstall !== false,
     port: res?.port || softwarePort(softwareId),
+    // Mojang publishes a Bedrock preview build alongside the stable one, from a
+    // different URL prefix. It is offered like any other version but labelled,
+    // because a preview server is not what most people mean by "install it".
+    preview: res?.preview || [],
   };
   state.versions.byType[key] = entry;
   return entry;
@@ -428,6 +432,7 @@ export async function refreshVersions(refresh = false) {
   state.versions.list = entry.list;
   state.versions.source = entry.source;
   state.versions.error = entry.error;
+  state.versions.preview = entry.preview || [];
   emit('versions');
 
   return !entry.error;

@@ -69,11 +69,14 @@ async function getJson(url, { timeout = 30000, retries = 3, signal, headers = nu
 /**
  * Fetch a document that is not JSON.
  *
- * Mojang publishes no Bedrock manifest - the only authoritative list of
- * published Bedrock Dedicated Server zips is embedded in the download page's
- * HTML - so something has to read a page rather than parse JSON. Same retry and
- * abort behaviour as getJson, with a size cap: this is a web page, and an
- * unbounded body is a way to have a bad day.
+ * This was written for the Bedrock version list, read by scraping Mojang's
+ * download page - which cannot work, because that page's links are rendered by
+ * JavaScript and are not in the served HTML. Bedrock now uses
+ * `/api/v1.0/download/links` through `getJson`, so nothing in this app calls
+ * `getText`; it stays because it is a small, correct, size-capped text fetch and
+ * the next page that has to be read should not be written from scratch. Same
+ * retry and abort behaviour as getJson, with a size cap: a web page is an
+ * unbounded body and a way to have a bad day.
  */
 async function getText(url, { timeout = 30000, retries = 3, signal, headers = null, maxBytes = 8 * 1024 * 1024 } = {}) {
   let lastErr;
@@ -136,6 +139,7 @@ async function download(url, dest, opts = {}) {
     retries = 4,
     signal = null,
     force = false,
+    headers: extraHeaders = null,
   } = opts;
 
   const throwIfCancelled = () => {

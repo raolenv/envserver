@@ -67,7 +67,15 @@ function createServerCardImpl() {
   const versionSelect = h(
     'select.select',
     versions.length
-      ? versions.map((v) => h('option', { value: v, text: v }))
+      ? versions.map((v) =>
+          h('option', {
+            value: v,
+            // Mojang ships a Bedrock preview build next to the stable one and
+            // it is a real, installable server - but installing it should be a
+            // decision, not an accident from picking the top of a list
+            text: state.versions.preview?.includes(v) ? `${v} (preview)` : v,
+          })
+        )
       : [h('option', { value: '', text: state.versions.loading ? 'Loading versions...' : 'No versions loaded yet' })]
   );
 
@@ -200,7 +208,28 @@ function createServerCardImpl() {
         )
       ),
       state.versions.error
-        ? h('div.banner.banner--warn', icon('alert'), `${state.versions.error}. You can create a server anyway once it loads.`)
+        ? h(
+            'div.banner.banner--warn',
+            icon('alert'),
+            h(
+              'span',
+              h('span', `${state.versions.error}.`),
+              // "create a server anyway once it loads" was advice that did
+              // nothing: with an empty list the Create button is disabled and
+              // there is nothing to wait for except another failed request
+              h(
+                'div.row',
+                { style: { marginTop: '10px' } },
+                h(
+                  'button.btn.btn--sm',
+                  { type: 'button', disabled: state.versions.loading, onClick: () => refreshVersions(true) },
+                  icon('refresh'),
+                  state.versions.loading ? 'Trying...' : 'Try again'
+                ),
+                h('span.field__hint', { text: 'EnvServer asks the same place Mojang\'s own download page asks. Nothing is cached from before this app could reach it.' })
+              )
+            )
+          )
         : null
     )
   );

@@ -826,6 +826,60 @@ async function runSmokeTest() {
     report.rendererErrors = smokeErrors;
     report.welcome = dismissed;
     report.terms = agreed;
+
+    // The Terms screen is prose built out of fragments, and it is only readable
+    // if the fragment grouping is right. Two bugs lived here and neither throws:
+    // a sentence written as three pieces came out as three paragraphs, and the
+    // bullet lists were wrapped in <p>. Both render, so nothing else catches
+    // them - the DOM has to be looked at.
+    report.termsStructure = await js(`(() => {
+      // the sidebar item is labelled Terms, not About
+      const item = [...document.querySelectorAll('#sidebar .navitem')]
+        .find((el) => /^terms/i.test(el.textContent.trim()));
+      if (!item) return { missing: true };
+      item.click();
+      const terms = document.querySelector('.terms');
+      if (!terms) return { notPainted: true };
+
+      const bad = [];
+      // <ul> inside <p> is not valid markup; a browser reparsing it closes the
+      // paragraph early and leaves the list outside the section it belongs to
+      for (const p of terms.querySelectorAll('p')) {
+        for (const ul of p.querySelectorAll('ul, ol')) {
+          bad.push({ why: 'a list wrapped in a paragraph', in: p.className });
+        }
+      }
+      // a paragraph of one or two words that does not end in a full stop is a
+      // sentence somebody split without saying so
+      for (const p of terms.querySelectorAll('p.terms__p')) {
+        const t = p.textContent.trim();
+        if (!t) continue;
+        if (t.split(/\\s+/).length <= 2 && !/[.!?]$/.test(t)) {
+          bad.push({ why: 'a paragraph that is a bare fragment', text: t });
+        }
+      }
+
+      const sections = [...terms.querySelectorAll('.terms__section')];
+      const licence = sections.find(
+        (s) => /^licence/i.test((s.querySelector('.terms__h') || {}).textContent || '')
+      );
+      const text = terms.textContent;
+      return {
+        bad,
+        sections: sections.length,
+        paragraphs: terms.querySelectorAll('p.terms__p').length,
+        lists: terms.querySelectorAll('ul.terms__list').length,
+        // the licence sentence is three fragments and must be one paragraph,
+        // with LICENSE still inline in the middle of it
+        licenceParas: licence ? licence.querySelectorAll('p.terms__p').length : -1,
+        licenceHasCode: Boolean(licence && licence.querySelector('p.terms__p code')),
+        // the copy has to describe the software that actually ships
+        saysBedrock: /bedrock dedicated server/i.test(text),
+        saysPhp: /php/i.test(text),
+        saysPaperOnly: /Paper Minecraft servers only/i.test(text),
+      };
+    })()`, { label: 'terms structure' });
+
     console.log('SMOKE ' + JSON.stringify(report, null, 2));
 
     if (smokeErrors.length) {
@@ -870,6 +924,41 @@ async function runSmokeTest() {
       }
       if (item.nodes < 5) {
         console.error(`SMOKE FAILED: nav "${item.label}" rendered only ${item.nodes} nodes`);
+        process.exitCode = 1;
+      }
+    }
+
+    // the Terms screen, as the markup actually came out
+    const terms = report.termsStructure || {};
+    if (terms.missing) {
+      console.error('SMOKE FAILED: there is no Terms item in the sidebar to read the terms from');
+      process.exitCode = 1;
+    } else if (terms.notPainted) {
+      console.error('SMOKE FAILED: the terms view painted no .terms');
+      process.exitCode = 1;
+    } else {
+      for (const b of terms.bad || []) {
+        console.error(`SMOKE FAILED: terms markup - ${b.why}${b.text ? `: ${JSON.stringify(b.text)}` : ''}`);
+        process.exitCode = 1;
+      }
+      if (terms.licenceParas !== 1) {
+        console.error(`SMOKE FAILED: the licence section rendered ${terms.licenceParas} paragraphs, not 1`);
+        process.exitCode = 1;
+      }
+      if (!terms.licenceHasCode) {
+        console.error('SMOKE FAILED: the licence section lost the LICENSE code span');
+        process.exitCode = 1;
+      }
+      if (!terms.saysBedrock) {
+        console.error('SMOKE FAILED: the terms do not mention the Bedrock server');
+        process.exitCode = 1;
+      }
+      if (!terms.saysPhp) {
+        console.error('SMOKE FAILED: the terms do not mention PHP');
+        process.exitCode = 1;
+      }
+      if (terms.saysPaperOnly) {
+        console.error('SMOKE FAILED: the terms still say "Paper Minecraft servers only"');
         process.exitCode = 1;
       }
     }
