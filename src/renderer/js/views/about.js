@@ -164,19 +164,19 @@ export function renderAbout(host) {
     host,
     h(
       'div.banner',
-      { class: locked ? 'banner--warn' : '' },
+      { class: locked ? 'banner--warn' : 'banner--ok' },
       icon(locked ? 'alert' : 'check'),
       h(
         'div.row',
-        { style: { alignItems: 'center', gap: '12px', flexWrap: 'wrap' } },
+        { style: { alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
         h(
           'span.grow',
           locked
             ? 'Read this before using EnvServer. Nothing is downloaded and nothing is changed until you agree.'
-            : 'The terms EnvServer is released under. Agreeing to them is recorded in this app\'s settings.'
+            : 'The terms EnvServer is released under.'
         ),
         locked
-          ? h('button.btn.btn--primary', { type: 'button', onClick: accept }, icon('check'), 'I understand and agree')
+          ? h('button.btn.btn--primary.btn--sm', { type: 'button', onClick: accept }, icon('check'), 'I agree')
           : h(
               'button.btn.btn--sm.btn--ghost',
               {
@@ -193,11 +193,10 @@ export function renderAbout(host) {
                 },
               },
               icon('refresh'),
-              'Withdraw agreement'
+              'Withdraw'
             )
       )
-    ),
-    termsBody({ locked })
+    )
   );
 }
 
