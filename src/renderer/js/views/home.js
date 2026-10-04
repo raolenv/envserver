@@ -4,7 +4,7 @@ import { bytes, megabytesToText, duration, relative, plural } from '../fmt.js';
 import { state, emit, openServer, setView, refreshDetail, statusFor } from '../state.js';
 import { startServer, stopServer, acceptEula, suggestMemory } from '../actions.js';
 import { installPaper, activeJobs } from '../jobs.js';
-import { badge, iconBadge, javaBadge, createServerCard } from './dashboard.js';
+import { createServerCard } from './dashboard.js';
 import { softwareLabel } from '../software.js';
 import { toast } from '../ui/toast.js';
 
@@ -76,18 +76,27 @@ function rowAction(server, r) {
   );
 }
 
-/** Badges that describe a server without needing its live status. */
-function rowBadges(server, r) {
-  const out = [];
-  if (server.mcVersion) out.push(iconBadge('cube', `${softwareLabel(server.type)} ${server.mcVersion}`, 'info'));
-  else out.push(badge('no version', 'warn'));
+/**
+ * The facts about a server, on one line.
+ *
+ * This used to be up to five rounded badges in a row. Five pills per row means
+ * the eye has to pick between five equally-loud things to answer "which version
+ * is this", so it is now one line of text, with only the genuinely wrong state
+ * picked out in the warning colour.
+ */
+function rowMeta(server) {
+  const facts = [
+    server.mcVersion ? `${softwareLabel(server.type)} ${server.mcVersion}` : 'no version',
+    server.build ? `build ${server.build}` : null,
+    `port ${server.port}`,
+    `${megabytesToText(server.memory.max)} max`,
+  ].filter(Boolean);
 
-  if (server.build) out.push(badge(`build ${server.build}`));
-  out.push(iconBadge('hardDrive', `port ${server.port}`));
-  out.push(badge(megabytesToText(server.memory.max)));
-  if (!server.jarInstalled) out.push(iconBadge('download', 'no jar', 'warn'));
-
-  return h('div.srow__badges', ...out.filter(Boolean));
+  return h(
+    'div.srow__meta',
+    { text: facts.join('   ') },
+    server.jarInstalled ? null : h('span.srow__warn', { text: '   no jar yet' })
+  );
 }
 
 /** The right-hand figures: live when it runs, historical when it does not. */
@@ -153,7 +162,7 @@ function serverRow(server) {
         h('div.srow__folder', { text: server.id })
       )
     ),
-    h('div.srow__mid', rowBadges(server, r), rowNumbers(server, r)),
+    h('div.srow__mid', rowMeta(server), rowNumbers(server, r)),
     h('div.srow__right', statusPill(r.running, r.starting, r.ready), rowAction(server, r), icon('chevronRight', { class: 'srow__go' })),
     jobs.length ? jobStrip(jobs) : null
   );
@@ -177,15 +186,9 @@ function jobStrip(jobs) {
 function listHead() {
   const total = state.servers.length;
   const running = state.servers.filter((s) => rowState(s.id).running).length;
+  if (!total) return null;
 
-  return h(
-    'div.srowhead',
-    h('div.content__sub', {
-      text: total
-        ? `${plural(total, 'server', 'servers')} - ${running} online. Click one to manage it.`
-        : 'Create one below and EnvServer installs Paper for you.',
-    })
-  );
+  return h('div.srowhead', h('div.muted', { text: `${plural(total, 'server', 'servers')}, ${running} online` }));
 }
 
 /* -------------------------------- empty --------------------------------- */
@@ -194,7 +197,7 @@ function emptyState() {
   return h(
     'div.panel',
     h('div.panel__body',
-      h('div.empty', icon('server'), h('b', { text: 'No servers yet' }), 'Every server lives in its own folder with its own world, plugins and logs.')
+      h('div.empty', icon('server'), h('b', { text: 'No servers yet' }), 'Make one below.')
     )
   );
 }
@@ -203,22 +206,14 @@ function emptyState() {
 
 export function renderHome(host) {
   if (!state.servers.length) {
-    return mount(host, listHead(), h('div.section', createServerCard()));
+    return mount(host, h('div.section', createServerCard()));
   }
 
   return mount(
     host,
     listHead(),
-    h(
-      'div.slist',
-      ...state.servers.map((s) => serverRow(s))
-    ),
-    state.homeCreating ? h('div.section', { style: { marginTop: '22px' } }, createServerCard()) : null,
-    h(
-      'div.field__hint',
-      { style: { marginTop: '20px' } },
-      'Each server is a separate folder. Removing one from this list never deletes its world.'
-    )
+    h('div.slist', ...state.servers.map((s) => serverRow(s))),
+    state.homeCreating ? h('div.section', { style: { marginTop: '22px' } }, createServerCard()) : null
   );
 }
 

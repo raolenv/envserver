@@ -39,7 +39,7 @@ export function renderPlugins(host) {
             icon('alert'),
             h('span', h('b', { text: `${sw.label} cannot load plugins.` }), ' The official Mojang jar has no plugin loader, so anything dropped in ', h('code', { text: 'plugins/' }), ' is simply ignored.')
           ),
-          h('div.field__hint', { style: { marginTop: '14px' } }, 'Create the server on Paper, Folia, Purpur, Spigot or CraftBukkit if you want plugins. Everything else on this server - the config, the whitelist, the console, backups - works exactly the same.'),
+          h('div.field__hint', { style: { marginTop: '14px' } }, 'This server software has no plugins. Config, whitelist, console and backups all work the same.'),
           h(
             'div.row',
             { style: { marginTop: '18px' } },

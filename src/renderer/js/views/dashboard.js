@@ -105,16 +105,16 @@ function createServerCardImpl() {
    * "Needs Java 21" for a Paper server and "needs PHP 8.1" for PocketMine are
    * very different promises, and somebody creating a PocketMine server on a
    * machine with no PHP should find out from this form rather than from a failed
-   * start.
+   * start. One sentence each - the full explanation lives on the dashboard.
    */
   const runtimeHint =
     sw.runtime === 'none'
-      ? h('div.field__hint', { text: `Runs ${runtimeEntry(sw.id)} directly - a native Windows program, so no Java is needed at all. Listens on port 19132.` })
+      ? h('div.field__hint', { text: 'Native Windows program, no Java. Port 19132.' })
       : sw.runtime === 'php'
         ? state.runtime.php?.length
-          ? h('div.field__hint', { text: `Needs PHP. EnvServer found PHP ${state.runtime.php[0].version} on this machine.` })
-          : h('div.field__hint', { text: `Needs PHP ${state.runtime.phpMin || '8.1'} or newer. This machine has none - you can create the server, but set a PHP path in Settings before starting it. Listens on port 19132.` })
-        : h('div.field__hint', { text: `Runs on Java. EnvServer picks the right version and downloads it if it is missing. Listens on port 25565.` });
+          ? h('div.field__hint', { text: `PHP ${state.runtime.php[0].version} found. Port 19132.` })
+          : h('div.field__hint', { text: `Needs PHP ${state.runtime.phpMin || '8.1'}. None on this machine - set one in Settings. Port 19132.` })
+        : h('div.field__hint', { text: 'Java is downloaded if missing. Port 25565.' });
 
   const submitText = sw.auto ? `Create and install ${sw.label.replace(/\s*\(.*\)$/, '')}` : 'Create server folder';
 
@@ -188,14 +188,12 @@ function createServerCardImpl() {
         h('div.field', h('div.field__label', { text: 'Name' }), nameInput),
         h('div.field', h('div.field__label', { text: 'Server software' }), typeSelect, softwareNote, runtimeHint),
         h('div.field', h('div.field__label', { text: 'Minecraft version' }), versionSelect,
-          h('div.field__hint', { text: versions.length ? `${versions.length} versions available for ${sw.label}` : 'No version list loaded yet.' })),
+          h('div.field__hint', { text: versions.length ? `${versions.length} available` : '' })),
         h(
           'div.field',
           h('div.field__label', { text: 'Memory' }),
-          h('div.row', h('strong', { style: { fontSize: '14px' }, text: `${megabytesToText(memory.min)} - ${megabytesToText(memory.max)}` })),
-          h('div.field__hint', {
-            text: `Set automatically from this machine's ${megabytesToText(state.settings.totalMemoryMb)}. Change it per server in Settings.`,
-          })
+          h('div.row', h('strong', { style: { fontSize: '13px' }, text: `${megabytesToText(memory.min)} - ${megabytesToText(memory.max)}` })),
+          h('div.field__hint', { text: 'Changeable in Settings.' })
         ),
         h(
           'div.field',
@@ -213,20 +211,14 @@ function createServerCardImpl() {
             icon('alert'),
             h(
               'span',
-              h('span', `${state.versions.error}.`),
-              // "create a server anyway once it loads" was advice that did
-              // nothing: with an empty list the Create button is disabled and
-              // there is nothing to wait for except another failed request
+              h('span', { text: `${state.versions.error}.` }),
+              // with an empty list the Create button is disabled, so there is
+              // nothing to wait for except another failed request
               h(
-                'div.row',
-                { style: { marginTop: '10px' } },
-                h(
-                  'button.btn.btn--sm',
-                  { type: 'button', disabled: state.versions.loading, onClick: () => refreshVersions(true) },
-                  icon('refresh'),
-                  state.versions.loading ? 'Trying...' : 'Try again'
-                ),
-                h('span.field__hint', { text: 'EnvServer asks the same place Mojang\'s own download page asks. Nothing is cached from before this app could reach it.' })
+                'button.btn.btn--sm',
+                { style: { marginTop: '9px' }, type: 'button', disabled: state.versions.loading, onClick: () => refreshVersions(true) },
+                icon('refresh'),
+                state.versions.loading ? 'Trying...' : 'Try again'
               )
             )
           )
@@ -235,7 +227,48 @@ function createServerCardImpl() {
   );
 }
 
-/* --------------------------------- hero --------------------------------- */
+/**
+ * One line of facts about the server.
+ *
+ * This used to be up to eight pills in a row, which made "EULA pending" exactly
+ * as loud as "port 19132" - the eye had no way to find the one that mattered. It
+ * is now plain text, and only the things that are actually wrong are coloured.
+ *
+ * @returns {Node}
+ */
+function heroFacts(record, detail, sw) {
+  const rt = sw.runtime;
+  const facts = [detail.server.mcVersion ? `${sw.label} ${detail.server.mcVersion}` : 'no version yet'];
+  if (detail.server.build) facts.push(`build ${detail.server.build}`);
+  facts.push(`port ${detail.port}`);
+
+  const problems = [];
+  let runtime = '';
+  if (rt === 'none') {
+    // a Bedrock server showing "Java 21" would be claiming work that does not
+    // exist, and one showing "no java" in red would read as a problem it has not got
+    runtime = 'no JVM needed';
+  } else if (rt === 'php') {
+    const ok = Boolean(detail.php?.resolved?.ok);
+    runtime = ok ? `PHP ${detail.php.resolved.version}` : `needs PHP ${detail.php?.min || '8.1'}`;
+    if (!ok) problems.push(runtime);
+  } else if (detail.java.requiredMajor) {
+    const match = detail.java.resolved?.match;
+    runtime = `Java ${detail.java.resolved?.major || detail.java.requiredMajor}`;
+    if (!match || match === 'older') problems.push(match === 'older' ? 'Java too old' : runtime);
+  }
+  if (runtime) facts.push(runtime);
+
+  if (!detail.onlineMode) problems.push('offline mode');
+  if (!detail.eula) problems.push('EULA not accepted');
+  if (detail.java.supportStatus === 'UNSUPPORTED') problems.push('version no longer supported');
+
+  return h(
+    'div.hero__badges',
+    h('span', { text: facts.join('   ') }),
+    problems.length ? h('span.hero__problems', { text: problems.join('   ') }) : null
+  );
+}
 
 function hero(record, detail, status) {
   const running = Boolean(status?.running);
@@ -244,35 +277,6 @@ function hero(record, detail, status) {
   const hasJar = detail.files?.installed ?? detail.jar?.installed;
   const eulaOk = detail.eula;
   const sw = softwareById(detail.server.type);
-  const rt = sw.runtime;
-
-  // one runtime badge, whatever the runtime is. A Bedrock server showing
-  // "Java 21 / exact java" would be claiming work that does not exist, and one
-  // showing "no java" in red would read as a problem it does not have.
-  const runtimeBadges =
-    rt === 'none'
-      ? [iconBadge('zap', 'no JVM needed', 'ok')]
-      : rt === 'php'
-        ? [
-            detail.php?.resolved?.ok
-              ? iconBadge('check', `PHP ${detail.php.resolved.version}`, 'ok')
-              : iconBadge('alert', `needs PHP ${detail.php?.min || '8.1'}`, 'err'),
-          ]
-        : [
-            detail.java.requiredMajor ? javaBadge(detail.java.resolved?.match) : null,
-            detail.java.requiredMajor ? badge(`Java ${detail.java.resolved?.major || detail.java.requiredMajor}`) : null,
-          ];
-
-  const badges = [
-    detail.server.mcVersion ? iconBadge('cube', `${sw.label} ${detail.server.mcVersion}`, 'info') : badge('no version yet', 'warn'),
-    detail.server.build ? badge(`build ${detail.server.build}`) : null,
-    ...runtimeBadges,
-    iconBadge('hardDrive', `port ${detail.port}`),
-    detail.onlineMode ? iconBadge('shield', 'online mode') : iconBadge('alert', 'offline mode', 'warn'),
-    eulaOk ? null : iconBadge('alert', 'EULA pending', 'err'),
-    detail.java.supportStatus === 'SUPPORTED' ? iconBadge('check', 'still supported', 'ok') : null,
-    detail.java.supportStatus === 'UNSUPPORTED' ? iconBadge('info', 'no longer supported', 'warn') : null,
-  ].filter(Boolean);
 
   const statusClass = ready ? '.statuspill--on' : starting ? '.statuspill--start' : '';
   const statusText = ready ? 'Online' : starting ? status.phase : 'Stopped';
@@ -330,7 +334,7 @@ function hero(record, detail, status) {
     h(
       'div.hero__top',
       h('img.hero__cube', { src: 'assets/icon-64.png', alt: '' }),
-      h('div.hero__meta', h('div.hero__name', { text: record.name }), h('div.hero__badges', ...badges)),
+      h('div.hero__meta', h('div.hero__name', { text: record.name }), heroFacts(record, detail, sw)),
       h(`div.statuspill${statusClass}`, h('span.dot'), h('span', { text: statusText }))
     ),
     h(
@@ -361,29 +365,21 @@ function quickCard(record, detail, status) {
    */
   const runtimeRow =
     runtime === 'none'
-      ? h(
-          'div',
-          h('div.kv', h('span.kv__k', { text: 'Runtime' }), iconBadge('zap', 'none - native binary', 'ok')),
-          h('div.field__hint', { text: `${runtimeEntry(record.type)} is a native Windows program, so there is no JVM to choose or download.` })
-        )
+      ? h('div.kv', h('span.kv__k', { text: 'Runtime' }), h('span', { text: `${runtimeEntry(record.type)}, no JVM` }))
       : runtime === 'php'
         ? h(
             'div',
             h(
               'div.kv',
               h('span.kv__k', { text: 'PHP runtime' }),
-              detail.php?.resolved?.ok ? iconBadge('check', `PHP ${detail.php.resolved.version}`, 'ok') : iconBadge('alert', `needs PHP ${detail.php?.min || '8.1'}`, 'err')
+              detail.php?.resolved?.ok ? h('span', { text: `PHP ${detail.php.resolved.version}` }) : h('span.hero__problems', { text: `needs PHP ${detail.php?.min || '8.1'}` })
             ),
-            detail.php?.resolved?.ok
-              ? h('div', { style: { fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--grey-5)', wordBreak: 'break-all', marginTop: '3px' }, text: detail.php.resolved.exe })
-              : h('div.field__hint', { text: detail.php?.explain || 'PocketMine-MP needs PHP 8.1 or newer. Set it in Settings.' })
+            h('div.pathline', { text: detail.php?.resolved?.ok ? detail.php.resolved.exe : detail.php?.explain || '' })
           )
         : h(
             'div',
-            h('div.kv', h('span.kv__k', { text: 'Java runtime' }), java.resolved ? javaBadge(java.resolved.match) : iconBadge('download', 'will be downloaded', 'warn')),
-            java.resolved
-              ? h('div', { style: { fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--grey-5)', wordBreak: 'break-all', marginTop: '3px' }, text: java.resolved.javaExe })
-              : h('div.field__hint', { text: java.explain || `This release needs Java ${java.requiredMajor}.` })
+            h('div.kv', h('span.kv__k', { text: 'Java runtime' }), h('span', { text: java.resolved ? `Java ${java.resolved.major}` : `Java ${java.requiredMajor}, will be downloaded` })),
+            h('div.pathline', { text: java.resolved ? java.resolved.javaExe : java.explain || '' })
           );
 
   return h(

@@ -34,15 +34,25 @@ import { initDemo, renderDemo, stopDemo, demoPlayers } from './demo.js';
 
 /* ------------------------------- view table ------------------------------ */
 
+/*
+ * The nav is the whole map of the app, so it carries the label and the icon and
+ * nothing else.
+ *
+ * These entries used to have an `eyebrow` and a `sub` as well, which put three
+ * lines of type at the top of every view: a small caps category, a big title,
+ * and a sentence that restated what the panels underneath already said. The
+ * eyebrow was decoration and the sub was noise, so both are gone; the sidebar
+ * item the user just clicked already says where they are.
+ */
 const NAV = [
-  { id: 'home', label: 'Servers', icon: 'server', eyebrow: 'Servers', title: 'Your servers', sub: 'Pick one to manage it, or add a new one.' },
-  { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', eyebrow: 'Run', title: 'Dashboard', sub: 'Start your servers and see who is online.', server: true },
-  { id: 'console', label: 'Console', icon: 'terminal', eyebrow: 'Output', title: 'Console', sub: 'Live server output, and the commands you can send.', server: true },
-  { id: 'config', label: 'Config', icon: 'sliders', eyebrow: 'Settings', title: 'Server config', sub: 'server.properties, the whitelist, ops and bans.', server: true },
-  { id: 'versions', label: 'Versions', icon: 'layers', eyebrow: 'Library', title: 'Server versions', sub: 'Every Minecraft version this software publishes a build for.', server: true },
-  { id: 'plugins', label: 'Plugins', icon: 'puzzle', eyebrow: 'Content', title: 'Plugins', sub: 'What is in the plugins folder right now.', server: true, needs: 'plugins' },
-  { id: 'settings', label: 'Settings', icon: 'gear', eyebrow: 'App', title: 'Settings', sub: 'Memory, Java, folders and backups.' },
-  { id: 'about', label: 'Terms', icon: 'shield', eyebrow: 'App', title: 'Terms', sub: 'The terms EnvServer is released under.' },
+  { id: 'home', label: 'Servers', icon: 'server' },
+  { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', server: true },
+  { id: 'console', label: 'Console', icon: 'terminal', server: true },
+  { id: 'config', label: 'Config', icon: 'sliders', server: true },
+  { id: 'versions', label: 'Versions', icon: 'layers', server: true },
+  { id: 'plugins', label: 'Plugins', icon: 'puzzle', server: true, needs: 'plugins' },
+  { id: 'settings', label: 'Settings', icon: 'gear' },
+  { id: 'about', label: 'Terms', icon: 'shield' },
 ];
 
 const RENDERERS = {
@@ -179,18 +189,20 @@ function renderSidebar() {
 
 /* -------------------------------- content ------------------------------- */
 
+/**
+ * The view header: a title and the view's own buttons, on one line.
+ *
+ * It used to render three of them - an eyebrow, a title and a sub-paragraph -
+ * which is 90px of type before the page starts, and the sub was the same
+ * sentence on every view.
+ */
 function renderHead() {
   const meta = NAV.find((n) => n.id === state.view) || NAV[0];
   const head = document.getElementById('content-head');
   const actions = (ACTIONS[meta.id] || (() => []))();
 
-  mount(head, 
-    h(
-      'div.content__titles',
-      h('div.content__eyebrow', { text: meta.eyebrow }),
-      h('h1.content__title', { text: meta.title }),
-      h('div.content__sub', { text: meta.sub })
-    ),
+  mount(head,
+    h('h1.content__title', { text: meta.title || meta.label }),
     actions.length ? h('div.content__head-actions', actions) : null
   );
 }

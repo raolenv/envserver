@@ -245,7 +245,7 @@ function listPanel(serverId, spec) {
       'div.panel__body',
       h('div.row', { style: { marginBottom: '12px' } }, input, addBtn),
       listBox,
-      h('div.field__hint', { style: { marginTop: '12px' }, text: `This list updates itself while the view is open. Changes are written to the JSON file; ${spec.reload} for the running server to apply them.` })
+      h('div.field__hint', { style: { marginTop: '12px' }, text: `Saved to the JSON file. ${spec.reload}` })
     )
   );
 }
@@ -292,11 +292,22 @@ export function renderConfig(host) {
                 : h('span', h('b', { text: 'No EULA to accept. ' }), 'PocketMine-MP is not Mojang\'s software and has no EULA of its own. Its licence is on pmmp.io.')
             )
           ),
-          rt === 'none'
-            ? h('div.field__hint', { style: { marginTop: '12px' } }, h('a', { onClick: (e) => { e.preventDefault(); window.env.shell.openExternal('https://www.minecraft.net/en-us/download/server/bedrock'); } }, 'Mojang\'s Bedrock server download page'))
-            : h('div.field__hint', { style: { marginTop: '12px' } }, h('a', { onClick: (e) => { e.preventDefault(); window.env.shell.openExternal('https://pmmp.io'); } }, 'PocketMine-MP'))
+        h(
+          'div.field__hint',
+          { style: { marginTop: '12px' } },
+          h(
+            'a',
+            {
+              onClick: (e) => {
+                e.preventDefault();
+                window.env.shell.openExternal(rt === 'none' ? 'https://www.minecraft.net/en-us/download/server/bedrock' : 'https://pmmp.io');
+              },
+            },
+            rt === 'none' ? 'minecraft.net' : 'pmmp.io'
+          )
         )
       )
+    )
     : h(
         'div.panel',
         h('div.panel__head', h('div.panel__title', icon('shield'), 'Minecraft EULA')),
@@ -450,7 +461,7 @@ function nonJavaExtras(record, values, noFile) {
         Object.keys(values).length
           ? h('div.tablewrap', { style: { marginTop: '12px' } }, h('table.vtable', h('thead', h('tr', h('th', { text: 'Key' }), h('th', { text: 'Value' }))), h('tbody', ...Object.keys(values).map((k) => h('tr', h('td', { text: k }), h('td', h('input.input.input--sm', { value: values[k], spellcheck: false, onInput: (e) => queueSave(record.id, { [k]: e.target.value }) })))))))
           : h('div.empty', { style: { padding: '22px' }, text: 'No keys yet.' }),
-        h('div.field__hint', { style: { marginTop: '12px' }, text: 'Every key PocketMine-MP reads, written to the file as you type. The common ones are motd, server-port, max-players, auto-save, language and settings-language.' })
+        h('div.field__hint', { style: { marginTop: '12px' }, text: 'Written to the file as you type. Common keys: motd, server-port, max-players, auto-save, language.' })
       )
     )
   );
@@ -479,7 +490,7 @@ function extrasPanel(serverId, values) {
             )
           )
         : h('div.empty', { style: { padding: '26px' }, text: 'No other keys are set in server.properties.' }),
-      h('div.field__hint', { style: { marginTop: '12px' }, text: 'Kept exactly as the server wrote them. Editing is safe; there is no delete button on purpose.' })
+      h('div.field__hint', { style: { marginTop: '12px' }, text: 'Exactly as the server wrote them. Editing is safe.' })
     )
   );
 }

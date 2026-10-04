@@ -89,17 +89,17 @@ function memoryPanel() {
             ? h('b', 'Tight for this machine. ')
             : h('b', 'Fits this machine. '),
         total
-          ? `Installed RAM is ${megabytesToText(total)}, so this leaves ${megabytesToText(Math.max(0, budget.headroomMb))} for Windows and everything else. `
+          ? `Installed RAM is ${megabytesToText(total)}, leaving ${megabytesToText(Math.max(0, budget.headroomMb))} for Windows and everything else. `
           : 'Installed RAM could not be read, so no advice is offered. ',
-        h('b', 'EnvServer sizes a new server from this machine automatically - about half of it - so this only needs setting by hand when you want something else.')
+        h('b', 'New servers are sized from this machine automatically - about half of it - so this only needs setting by hand when you want something else.')
       )
     ),
-    h('div.field__hint', { text: 'A small world with a handful of players is happy on 2 GB. More memory does not make it faster, it makes the garbage collector pause longer.' }),
+    h('div.field__hint', { text: '2 GB is plenty for a small world. More memory does not make a server faster; it makes the garbage collector pause longer.' }),
     h(
       'div.field__hint',
       { style: { marginTop: '10px' } },
-      h('b', { text: 'Why a 512 MB server shows 800 MB in Task Manager: ' }),
-      '-Xmx is a ceiling on the JVM heap and nothing else. Metaspace, the code cache, one stack per thread and Paper\'s off-heap network buffers all sit outside it and are still counted against the process. The dashboard reads the heap itself where it can, and keeps the process total as a separate number.'
+      h('b', { text: 'Why 512 MB shows as 800 MB in Task Manager: ' }),
+      '-Xmx only caps the JVM heap. Metaspace, the code cache, one stack per thread and Paper\'s network buffers sit outside it and still count against the process.'
     )
   );
 }
@@ -153,7 +153,7 @@ function javaPanel() {
     h('div.switch-row', { style: { paddingTop: 0 } },
       h('div.switch-row__text',
         h('div.switch-row__title', { text: 'Download Java automatically when one is missing' }),
-        h('div.switch-row__desc', { text: "Takes Eclipse Temurin from adoptium.net and installs it into this app's own folder." })),
+        h('div.switch-row__desc', { text: "From adoptium.net, into this app's own folder." })),
       switchBox(settings.autoInstallJava !== false, (next) => { saveSettings({ autoInstallJava: next }); toast(next ? 'EnvServer will download a missing Java for you' : 'EnvServer will only use Java that is already installed', 'info'); })
     ),
     missingRow,
@@ -174,7 +174,7 @@ function javaPanel() {
     h('div.divider'),
     h('div.field__label', { text: 'Installed runtimes' }),
     runtimeList,
-    plan.runtimes.length ? h('div.field__hint', { text: `${plural(plan.runtimes.length, 'runtime')} found. Each was probed with java -version rather than read off its folder name.` }) : null
+    plan.runtimes.length ? h('div.field__hint', { text: `${plural(plan.runtimes.length, 'runtime')} found.` }) : null
   );
 }
 
@@ -270,7 +270,7 @@ function phpPanel() {
     h('div.field__label', { text: 'Installed PHP' }),
     list,
     usable.length
-      ? h('div.field__hint', { text: `${plural(usable.length, 'runtime')} usable. Each was probed by running php -r "echo PHP_MAJOR_VERSION", not read off a folder name.` })
+      ? h('div.field__hint', { text: `${plural(usable.length, 'runtime')} usable.` })
       : found.length
         ? h('div.field__hint', { text: `Nothing here is new enough. PocketMine-MP needs PHP ${min} or newer.` })
         : null
@@ -314,7 +314,7 @@ function behaviourPanel() {
     h('div.switch-row', { style: { paddingTop: 0 } },
       h('div.switch-row__text',
         h('div.switch-row__title', { text: "Use Paper's recommended JVM flags" }),
-        h('div.switch-row__desc', { text: 'The G1 garbage collector tuning Paper publishes for the release. Usually right.' })),
+        h('div.switch-row__desc', { text: 'Paper\'s own G1 tuning for the release. Usually right.' })),
       switchBox(settings.useRecommendedFlags !== false, (next) => saveSettings({ useRecommendedFlags: next }))
     ),
     h('div.switch-row',

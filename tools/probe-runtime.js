@@ -91,7 +91,7 @@
   const rendered = {
     check: 'pocketmine dashboard text',
     view: document.querySelector('.content__title')?.textContent || '(none)',
-    heroBadges: [...(hero?.querySelectorAll('*') || [])].map((e) => e.textContent.trim()).filter(Boolean),
+    heroFacts: (hero?.textContent || '').replace(/\s+/g, ' ').trim(),
     // the whole point: a PocketMine server must never be told about Java
     saysJava: /Java/.test(hero?.textContent || ''),
     saysPhp: /PHP/.test(hero?.textContent || ''),
@@ -164,7 +164,8 @@
   const bedrockHero = document.querySelector('.hero__badges');
   results.push({
     check: 'bedrock dashboard text',
-    heroBadges: [...(bedrockHero?.querySelectorAll('*') || [])].map((e) => e.textContent.trim()).filter(Boolean),
+    // the facts line is plain text now, not a row of pills, so read the text
+    heroFacts: (bedrockHero?.textContent || '').replace(/\s+/g, ' ').trim(),
     saysJava: /Java/.test(bedrockHero?.textContent || ''),
     banner: document.querySelector('.banner--warn')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 400) || null,
     startTitle: document.querySelector('.runbtn')?.getAttribute('title') || '',

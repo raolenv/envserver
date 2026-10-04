@@ -254,11 +254,11 @@ function installedPanel() {
         )
       ),
       h('div.field__hint', {
-        style: { marginTop: '10px' },
+        style: { marginTop: '9px' },
         text:
           sw.runtime === 'none'
-            ? 'Installing a different version replaces the server files in place. Your world and its permissions are kept.'
-            : 'Installing a different version replaces the file in place. The world is kept.',
+            ? 'Installing another version replaces the server files. Your world is kept.'
+            : 'Installing another version replaces the file. The world is kept.',
       })
     )
   );
@@ -344,9 +344,9 @@ export function renderVersions(host) {
     sw.auto
       ? h(
           'div.field__hint',
-          { style: { marginTop: '18px' } },
-          `${label} builds come straight from `,
-          h('a', { onClick: (e) => { e.preventDefault(); window.env.shell.openExternal(sw.home || 'https://papermc.io/downloads'); } }, sw.home || 'papermc.io'),
+          { style: { marginTop: '16px' } },
+          'From ',
+          h('a', { onClick: (e) => { e.preventDefault(); window.env.shell.openExternal(sw.home || 'https://papermc.io/downloads'); } }, (sw.home || 'papermc.io').replace(/^https?:\/\//, '')),
           '.'
         )
       : h(
