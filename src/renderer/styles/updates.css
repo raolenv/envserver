@@ -1,0 +1,169 @@
+/* =====================================================================
+   EnvServer - the updates popover.
+
+   A panel under the titlebar button rather than a full-screen overlay: the
+   question it answers ("is there a newer one, and can I go back?") is worth
+   asking without losing what you were looking at.
+   ===================================================================== */
+
+.updates {
+  position: fixed;
+  top: var(--titlebar-h);
+  right: 0;
+  z-index: 60;
+  width: 372px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - var(--titlebar-h) - 24px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius) 0;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.updates__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 14px 11px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.updates__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.updates__ver {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.updates__body {
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.updates__hero {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.updates__hero .icon {
+  color: var(--primary);
+}
+
+.updates__herotext {
+  min-width: 0;
+  flex: 1;
+}
+
+.updates__herotitle {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.updates__herosub {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.updates__section {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.updates__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.updates__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.updates__rowver {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  flex: none;
+}
+
+.updates__rowmeta {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* the answer to "will my servers still be there", with the actual folder in it */
+.updates__note {
+  display: flex;
+  gap: 8px;
+  padding: 10px 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--primary);
+  border-radius: var(--radius);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.updates__note .icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--primary);
+}
+
+.updates__path {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  word-break: break-all;
+  margin-top: 3px;
+}
+
+.updates__bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-2);
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.updates__barfill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.18s ease-out;
+}

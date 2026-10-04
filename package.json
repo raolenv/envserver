@@ -1,0 +1,58 @@
+{
+  "name": "envserver",
+  "productName": "EnvServer",
+  "version": "1.1.0",
+  "description": "EnvServer - local Minecraft server manager for Windows (Paper, Folia, Purpur, Vanilla, Spigot, CraftBukkit)",
+  "author": "raolenv",
+  "repository": { "type": "git", "url": "https://github.com/raolenv/envserver.git" },
+  "homepage": "https://github.com/raolenv/envserver#readme",
+  "bugs": { "url": "https://github.com/raolenv/envserver/issues" },
+  "keywords": ["minecraft", "server", "paper", "purpur", "spigot", "folia", "manager", "windows", "electron"],
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "smoke": "electron . --smoke-test",
+    "test": "node tools/syntax.js && node tools/graph.js && node tools/test.js",
+    "syntax": "node tools/syntax.js",
+    "graph": "node tools/graph.js",
+    "e2e": "node tools/e2e.js",
+    "shot": "electron . --screenshot=shot.png",
+    "docs": "node tools/shots.js",
+    "assets": "node tools/gen-assets.js",
+    "dist": "electron-builder --win nsis portable --publish never",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.envserver.app",
+    "productName": "EnvServer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "src/renderer/assets/icon.ico",
+      "artifactName": "EnvServer-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "EnvServer",
+      "artifactName": "EnvServer-${version}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "EnvServer-${version}-portable.${ext}"
+    }
+  }
+}

@@ -1,0 +1,501 @@
+/* =====================================================================
+   EnvServer - base
+   tokens, reset, window chrome, welcome, toasts, loader
+   ---------------------------------------------------------------------
+   The palette, gradients, corner radius and button construction below are
+   Minecraft's own published design tokens (mc-components), not invented ones:
+   square corners, warm greys, the green ramp, gradient buttons with a hard
+   4px bottom shadow, and Noto Sans first in the stack.
+   ===================================================================== */
+
+:root {
+  /* Minecraft green ramp, lightest to darkest */
+  --green-1: #a0e081;
+  --green-2: #86d562;
+  --green-3: #6cc349;
+  --green-4: #52a535;
+  --green-5: #3c8527;
+  --green-6: #2a641c;
+
+  /* warm grey ramp - note these are brown-leaning, not blue-grey */
+  --grey-6: #262423;
+  --grey-5: #3d3938;
+  --grey-4: #6b6562;
+  --grey-3: #aba09c;
+  --grey-2: #d0c5c0;
+  --grey-1: #ede5e2;
+
+  --off-black: #171615;
+  --off-white: #fcf5f1;
+  --white: #fff;
+
+  --blue-2: #3a87f4;
+  --blue-3: #1e6eea;
+  --blue-4: #0855db;
+
+  --gold: #ffc42b;
+  --red: #e53d4f;
+  --red-deep: #a52b3a;
+
+  /* the three published gradients */
+  --grad-green: linear-gradient(180deg, #6cc349, #52a535 50%, #3c8527);
+  --grad-dark: linear-gradient(180deg, #3d3938, #262423 50%, #171615);
+  --grad-light: linear-gradient(180deg, #fcf5f1, #ede5e2 50%, #d0c5c0);
+
+  /* Minecraft buttons: flat face plus a hard shadow, and NO border radius */
+  --btn-shadow: 0 4px 0 rgba(0, 0, 0, 0.25);
+  --btn-shadow-sm: 0 3px 0 rgba(0, 0, 0, 0.25);
+  --focus-ring: 0 0 0 2px var(--white), 0 0 0 4px var(--green-3);
+
+  --font: 'Noto Sans', 'Segoe UI', 'Segoe UI Variable Text', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'Noto Sans Mono', ui-monospace, 'Cascadia Code', Consolas, 'Courier New', monospace;
+
+  --radius: 0;
+
+  --titlebar-h: 40px;
+  --sidebar-w: 246px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--off-black);
+  color: var(--off-white);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+/** `hidden` has to beat every author `display` rule, or a hidden overlay stays painted. */
+[hidden] {
+  display: none !important;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--green-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+a:hover {
+  color: var(--green-1);
+  text-decoration: underline;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: var(--off-black);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--grey-5);
+  border: 3px solid var(--off-black);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--grey-4);
+}
+
+/* ============================ window chrome ============================ */
+
+.titlebar {
+  position: relative;
+  z-index: 40;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--off-black);
+  border-bottom: 1px solid #000;
+  -webkit-app-region: drag;
+}
+
+.titlebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 14px;
+}
+
+.titlebar__logo {
+  width: 22px;
+  height: 22px;
+}
+
+.titlebar__name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--off-white);
+}
+
+.titlebar__controls {
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.wc-btn {
+  width: 48px;
+  height: var(--titlebar-h);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid #000;
+  color: var(--grey-2);
+  cursor: pointer;
+}
+.wc-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+.wc-btn:hover {
+  background: var(--grey-6);
+  color: var(--white);
+}
+.wc-btn--close:hover {
+  background: var(--red);
+  color: var(--white);
+}
+
+/* the update button carries a dot when a newer version exists, so the only
+   thing a user has to remember is that it lives next to the window buttons */
+.wc-btn--update {
+  position: relative;
+  color: var(--grey-4);
+}
+.wc-btn--update:hover,
+.wc-btn--update.is-open {
+  color: var(--white);
+}
+.wc-btn__dot {
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green-3);
+  box-shadow: 0 0 0 2px var(--off-black);
+}
+
+/* ============================== welcome =============================== */
+
+.welcome {
+  position: relative;
+  z-index: 10;
+  height: calc(100vh - var(--titlebar-h));
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  overflow: auto;
+}
+
+.welcome__card {
+  width: min(680px, 100%);
+  padding: 40px;
+  text-align: center;
+  background: var(--grad-dark);
+  border: 2px solid #000;
+  box-shadow: 0 12px 0 rgba(0, 0, 0, 0.35);
+}
+
+.welcome__logo {
+  width: 104px;
+  height: 104px;
+  margin: 0 auto 22px;
+  filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.45));
+}
+
+.welcome__title {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  line-height: 1.12;
+  margin-bottom: 10px;
+  color: var(--off-white);
+}
+
+.welcome__sub {
+  color: var(--grey-2);
+  font-size: 15px;
+  max-width: 48ch;
+  margin: 0 auto 26px;
+}
+
+.welcome__points {
+  text-align: left;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+  margin: 0 0 28px;
+  padding: 22px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 2px solid #000;
+}
+
+.welcome__point {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--grey-3);
+}
+.welcome__point .icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--green-3);
+}
+.welcome__point b {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--off-white);
+  margin-bottom: 2px;
+}
+
+.welcome__note {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid #000;
+  color: var(--grey-4);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+/* ============================== loader =============================== */
+
+/*
+ * The loading state: the app logo turning on two axes, like a block rotating.
+ * Slow on purpose - a spinner that whips round reads as a glitch, and this is
+ * what the user watches while a 200 MB JDK unpacks.
+ */
+.loader {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  perspective: 400px;
+}
+.loader--lg {
+  width: 96px;
+  height: 96px;
+}
+.loader--sm {
+  width: 26px;
+  height: 26px;
+}
+.loader--xl {
+  width: 132px;
+  height: 132px;
+}
+
+.loader__cube {
+  width: 100%;
+  height: 100%;
+  animation: loader-spin 3.2s linear infinite;
+  transform-style: preserve-3d;
+}
+
+@keyframes loader-spin {
+  0% {
+    transform: rotateX(0deg) rotateY(0deg);
+  }
+  50% {
+    transform: rotateX(180deg) rotateY(180deg);
+  }
+  100% {
+    transform: rotateX(360deg) rotateY(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loader__cube {
+    animation: loader-fade 1.8s ease-in-out infinite;
+  }
+  @keyframes loader-fade {
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+
+/* =============================== toasts =============================== */
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 90;
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  max-width: 420px;
+  padding: 13px 18px;
+  background: var(--grey-6);
+  border: 2px solid #000;
+  box-shadow: var(--btn-shadow);
+  font-size: 14px;
+  color: var(--off-white);
+  animation: toast-in 0.2s ease both;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.toast.is-out {
+  animation: toast-out 0.18s ease both;
+}
+.toast .icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.toast--ok .icon {
+  color: var(--green-2);
+}
+.toast--err .icon {
+  color: #ff8a94;
+}
+.toast--info .icon {
+  color: var(--blue-2);
+}
+.toast--busy .icon {
+  color: var(--gold);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* ============================== overlay ============================== */
+
+.overlay {
+  position: fixed;
+  inset: var(--titlebar-h) 0 0 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(2px);
+}
+
+.overlay__box {
+  width: min(520px, 92vw);
+  padding: 28px;
+  background: var(--grad-dark);
+  border: 2px solid #000;
+  box-shadow: 0 10px 0 rgba(0, 0, 0, 0.35);
+}
+
+.overlay__title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.overlay__status {
+  color: var(--grey-2);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 12px 0 0;
+  min-height: 20px;
+}
+.overlay__status.is-error {
+  color: #ff9ba3;
+}
+.overlay__status.is-ok {
+  color: var(--green-2);
+}
+
+.overlay__foot {
+  margin-top: 24px;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+/* ============================== progress ============================== */
+
+.progress {
+  position: relative;
+  height: 14px;
+  background: var(--grey-6);
+  border: 2px solid #000;
+  overflow: hidden;
+}
+
+.progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--grad-green);
+  transition: width 0.3s ease;
+}
+
+.progress--indeterminate .progress__fill {
+  width: 30%;
+  transition: none;
+  animation: progress-slide 1.6s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+
+.progress__label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--white);
+  text-shadow: 0 1px 0 #000;
+}

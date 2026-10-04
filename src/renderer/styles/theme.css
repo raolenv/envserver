@@ -1,0 +1,302 @@
+/* =====================================================================
+   EnvServer - the theme.
+
+   Loaded LAST, on purpose: everything above it is structure (layout, panels,
+   controls) and this is the skin. It is the only file that decides what the app
+   looks like - flat dark grey surfaces, thin 1px borders, 6px corners, and the
+   Minecraft-launcher green #52a535 as the action colour.
+
+   Do not delete this file expecting the app to survive: `base.css` defines the
+   whole original palette (hard shadows, `--radius: 0`, bevelled buttons) and the
+   other two sheets style against *that*. Remove this and the app still runs, but
+   it comes back as the old beveled grey theme.
+   ===================================================================== */
+
+:root {
+  --radius: 6px;
+  --surface: #2a2a2a;        /* cards */
+  --surface-2: #333333;      /* hover / panel head */
+  --line: rgba(255, 255, 255, 0.07);
+  --bg: #1f1f1f;             /* app background */
+  --bg-2: #141414;           /* sidebar */
+  --text: #e6e6e6;
+  --text-2: #a3a3a3;
+  --text-3: #6e6e6e;
+  --primary: #52a535;        /* action green */
+  --primary-2: #3c8527;
+  --ok: #52a535;
+  --warn: #e0a520;
+  --err: #e53d4f;
+}
+
+* {
+  border-radius: var(--radius);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.shell { background: var(--bg); }
+
+.sidebar {
+  background: var(--bg-2);
+  border-right: 1px solid var(--line);
+}
+.sidebar .navitem,
+.sidebar .serverpick__item {
+  color: var(--text-2);
+  font-weight: 600;
+  border-radius: var(--radius);
+}
+.sidebar .navitem:hover,
+.sidebar .serverpick__item:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.sidebar .navitem.is-active,
+.sidebar .serverpick__item.is-active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.sidebar .navitem .icon,
+.sidebar .serverpick__item .icon {
+  color: var(--text-3);
+}
+.sidebar .navitem.is-active .icon {
+  color: var(--primary);
+}
+.sidebar__section { color: var(--text-3); }
+.sidebar__brand-name { color: var(--text); }
+
+.content { background: var(--bg); }
+.content__head {
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+}
+.content__title { color: var(--text); }
+.content__sub,
+.muted { color: var(--text-2); }
+.content__eyebrow { color: var(--text-3); letter-spacing: 2px; }
+.content__body { background: var(--bg); }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius);
+}
+.panel__head {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.panel__title { color: var(--text); }
+
+.banner {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  border-radius: var(--radius);
+}
+.banner--warn { background: rgba(245, 181, 68, 0.12); border-color: rgba(245,181,68,.4); color: #ffd48a; }
+.banner--err { background: rgba(255, 93, 108, 0.12); border-color: rgba(255,93,108,.4); color: #ff9aa4; }
+.banner--ok { background: rgba(56, 210, 126, 0.12); border-color: rgba(56,210,126,.4); color: #8ae7b4; }
+
+.empty { color: var(--text-3); }
+.empty b { color: var(--text); }
+
+.badge {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  box-shadow: none;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.badge--ok { background: rgba(56,210,126,.15); color: #7fe3ac; border-color: rgba(56,210,126,.4); }
+.badge--warn { background: rgba(245,181,68,.15); color: #ffd48a; border-color: rgba(245,181,68,.4); }
+.badge--err,
+.badge--danger { background: rgba(255,93,108,.15); color: #ff9aa4; border-color: rgba(255,93,108,.4); }
+.badge--info { background: rgba(91,140,255,.15); color: #a6c3ff; border-color: rgba(91,140,255,.4); }
+
+.input,
+.select,
+.textarea {
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+.input::placeholder,
+.textarea::placeholder { color: var(--text-3); }
+.input:focus,
+.select:focus,
+.textarea:focus {
+  box-shadow: 0 0 0 2px rgba(91, 140, 255, 0.35);
+  border-color: var(--primary);
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+input[type='range']::-webkit-slider-thumb {
+  background: var(--primary);
+  border: 1px solid rgba(255,255,255,.4);
+  border-radius: var(--radius);
+}
+
+.btn {
+  border: 1px solid transparent;
+  box-shadow: none;
+  border-radius: var(--radius);
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.btn:hover:not([disabled]) { filter: brightness(1.12); }
+.btn:active:not([disabled]) { transform: translateY(1px); }
+.btn--primary {
+  background: linear-gradient(180deg, #5dbd41, #3c8527);
+  color: #fff;
+  border-color: rgba(0, 0, 0, 0.35);
+}
+.btn--light { background: var(--text); color: var(--bg); }
+.btn--ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-2);
+}
+.btn--danger {
+  background: linear-gradient(180deg, #ff6f7d, #e53d4f);
+  color: #fff;
+}
+
+.switch,
+.switch[aria-checked='true'] {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.switch[aria-checked='true'] {
+  background: var(--primary);
+}
+.switch::after { border-radius: 50%; }
+
+/* ---- server list rows ---- */
+
+.srow {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius);
+}
+.srow:hover { background: var(--surface-2); }
+.srow:active { transform: translateY(2px); }
+.srow__name { color: var(--text); }
+.srow__folder,
+.stat__label { color: var(--text-3); }
+.stat__value { color: var(--text); }
+.srow__dot { border-radius: 50%; border: 0; }
+.srow__dot--on { background: var(--ok); }
+.srow__dot--busy { background: var(--warn); }
+.statuspill {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  border-radius: 999px;
+  box-shadow: none;
+}
+.statuspill .dot { border-radius: 50%; border: 0; }
+.statuspill--on .dot { background: var(--ok); }
+.statuspill--start .dot { background: var(--warn); }
+
+.hero {
+  background: linear-gradient(180deg, #2f2f2f, #242424);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius);
+}
+.hero__name,
+.hero__stats .stat__value { color: var(--text); }
+.hero::before,
+.hero::after { background: none; }
+
+.kv { color: var(--text-2); border-color: var(--line); }
+.kv__k { color: var(--text-3); }
+.kv__v { color: var(--text); }
+.motd {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: #8ae7b4;
+  border-radius: var(--radius);
+}
+
+.vtable th { background: var(--surface-2); color: var(--text-2); }
+.vtable td { color: var(--text); }
+.vtable tbody tr:hover td { background: rgba(255,255,255,0.04); }
+
+.term {
+  background: #101010;
+  border: 1px solid var(--line);
+  color: #a8a8a8;
+  border-radius: var(--radius);
+}
+.console-side { border-left: 1px solid var(--line); background: var(--surface); }
+
+.toast {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius);
+}
+
+.welcome__card,
+.overlay__box {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius);
+}
+
+.jvmlist__row,
+.javaruntime,
+.checkline,
+.playerrow {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.argchip,
+code {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: #a6c3ff;
+  border-radius: var(--radius);
+}
+
+.terms__list li { color: var(--text-2); }
+.terms__list li::before { background: var(--primary); border-radius: 50%; }
+
+.titlebar {
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+.wc-btn { border-left: 1px solid var(--line); }
+.wc-btn:hover { background: var(--surface); }
+
+.progress {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.progress__fill { background: linear-gradient(90deg, var(--primary), #8b7bff); border-radius: 999px; }
+
+.playerrow__tag { border-radius: 999px; }
+.demo-banner { background: rgba(245,181,68,.12); border: 1px solid rgba(245,181,68,.4); color: #ffd48a; }

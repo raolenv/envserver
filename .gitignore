@@ -1,0 +1,33 @@
+# dependencies and build output - never committed
+node_modules/
+release/
+dist/
+
+# scratch
+tmp/
+*.log
+*.part
+
+# Ad-hoc captures a `npm run shot` run drops in the project root.
+# The leading slash matters: without it gitignore matches at every level, and
+# `config*.png` would also swallow docs/screenshots/config.png, which the README
+# needs.
+/shot.png
+/create*.png
+/home*.png
+/settings*.png
+/console*.png
+/config*.png
+/versions*.png
+/plugins*.png
+/dashboard*.png
+/welcome*.png
+/new-server*.png
+/preload.restore.js
+
+# editors and OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
