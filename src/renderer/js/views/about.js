@@ -177,24 +177,7 @@ export function renderAbout(host) {
         ),
         locked
           ? h('button.btn.btn--primary.btn--sm', { type: 'button', onClick: accept }, icon('check'), 'I understand and agree')
-          : h(
-              'button.btn.btn--sm.btn--ghost',
-              {
-                type: 'button',
-                onClick: async () => {
-                  const { confirmBox } = await import('../ui/overlay.js');
-                  const ok = await confirmBox({
-                    title: 'Withdraw agreement',
-                    message: 'EnvServer will stop working until you agree to the terms again. Your servers and worlds are not touched.',
-                    confirmText: 'Withdraw',
-                    danger: true,
-                  });
-                  if (ok) await saveSettings({ termsAccepted: false });
-                },
-              },
-              icon('refresh'),
-              'Withdraw agreement'
-            )
+          : null
       )
     ),
     termsBody({ locked })
