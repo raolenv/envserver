@@ -1,9 +1,20 @@
 import { h, mount, loader, switchBox } from '../dom.js';
 import { icon } from '../icons.js';
 import { megabytesToText, plural } from '../fmt.js';
-import { state, activeServer, saveSettings, refreshDetail, refreshJvmPlan, createServer, refreshServers, deleteServer } from '../state.js';
+import {
+  state,
+  activeServer,
+  saveSettings,
+  refreshDetail,
+  refreshJvmPlan,
+  createServer,
+  refreshServers,
+  deleteServer,
+  setPhpPath,
+} from '../state.js';
 import { addJava as downloadJava, suggestMemory, memoryBudget } from '../actions.js';
 import { badge, iconBadge } from './dashboard.js';
+import { SOFTWARE, runtimeNoun } from '../software.js';
 import { toast } from '../ui/toast.js';
 import { confirmBox } from '../ui/overlay.js';
 
@@ -15,8 +26,17 @@ import { confirmBox } from '../ui/overlay.js';
  * window is wide, so the space should be used.
  */
 
-function panel(title, iconName, body) {
-  return h('div.panel', h('div.panel__head', h('div.panel__title', icon(iconName), title)), h('div.panel__body', body));
+/**
+ * A titled panel.
+ *
+ * `key` adds a `panel--<key>` class, and exists so the README screenshot tool can
+ * crop to one specific panel. Cropping to `.settings > .section:first-child`
+ * instead catches the Java runtime list too, and since that list is often taller
+ * than the window the crop is clamped to the whole viewport - which produced a
+ * `memory.png` byte-identical to `settings.png`.
+ */
+function panel(title, iconName, body, key) {
+  return h('div.panel', { className: key ? `panel panel--${key}` : 'panel' }, h('div.panel__head', h('div.panel__title', icon(iconName), title)), h('div.panel__body', body));
 }
 
 function field(label, control, hint) {
@@ -158,6 +178,105 @@ function javaPanel() {
   );
 }
 
+/* --------------------------------- php ---------------------------------- */
+
+/**
+ * PHP, for PocketMine-MP.
+ *
+ * A separate panel rather than a row in the Java list, because it behaves the
+ * opposite way: Java can be downloaded on demand, PHP cannot. Every Windows PHP
+ * build is somebody's own build under their own licence, so EnvServer finds an
+ * existing one and refuses to start PocketMine without it instead of quietly
+ * fetching a runtime it has no right to redistribute.
+ *
+ * It only appears when something needs it. On a machine with no PocketMine
+ * server, a PHP section is a question nobody asked.
+ */
+function phpPanel() {
+  const rt = state.runtime;
+  const settings = state.settings;
+  const min = rt.phpMin || '8.1';
+
+  const needsPhp = SOFTWARE.some((s) => s.runtime === 'php') && state.servers.some((s) => s.type === 'pocketmine');
+  if (!needsPhp) return null;
+
+  const found = rt.php || [];
+  const usable = found.filter((p) => p.ok);
+
+  const overrideInput = h('input.input', {
+    value: settings.phpPath || '',
+    placeholder: 'empty = find a PHP automatically',
+    spellcheck: false,
+  });
+
+  const list = found.length
+    ? h(
+        'div.javaruntimes',
+        ...found.map((p) =>
+          h(
+            'div.javaruntime',
+            h('span.javaruntime__major', { text: `PHP ${p.version}` }),
+            h('span.javaruntime__path', { title: p.exe, text: p.exe }),
+            p.ok ? badge('usable', 'ok') : badge(`too old, needs ${min}`, 'warn')
+          )
+        )
+      )
+    : h(
+        'div.empty',
+        { style: { padding: '26px' } },
+        icon('alert'),
+        h('b', { text: `No PHP on this machine` }),
+        `PocketMine-MP needs PHP ${min} or newer. php.org/downloads has official Windows builds.`
+      );
+
+  return h(
+    'div.col',
+    { style: { gap: '14px' } },
+    h('div.banner.banner--warn', icon('info'), h('div',
+      h('b', { text: 'EnvServer does not install PHP for you' }),
+      ' - PHP for Windows is not one redistributable binary. Each build comes from the PHP project or a third party, under that publisher\'s licence, so shipping one inside this app is not ours to do. Install PHP and point EnvServer at it below.'
+    )),
+    field(
+      'PHP override',
+      h(
+        'div.pathbox',
+        overrideInput,
+        h('button.btn.btn--sm', {
+          type: 'button',
+          onClick: async () => {
+            const p = overrideInput.value.trim();
+            const res = await setPhpPath(p);
+            if (!res?.ok) return toast(res?.error || 'no working php.exe in that folder', 'err');
+            // clearing the override does not return a runtime, so there is no
+            // `res.runtime` to read - say what happened rather than printing
+            // "PHP undefined"
+            toast(res.runtime ? `PocketMine-MP will run on ${res.runtime.version}` : 'EnvServer will find a PHP automatically again', 'ok');
+          },
+        }, 'Use'),
+        h('button.btn.btn--sm.btn--ghost', {
+          type: 'button',
+          onClick: async () => {
+            const res = await window.env.shell.pickDirectory();
+            if (!res?.ok || res.cancelled) return;
+            overrideInput.value = res.dir;
+            const done = await setPhpPath(res.dir);
+            if (!done?.ok) return toast(done?.error || 'no working php.exe in that folder', 'err');
+          },
+        }, 'Browse')
+      ),
+      `A PHP folder or a php.exe. Overrides automatic detection for every PocketMine server.`
+    ),
+    h('div.divider'),
+    h('div.field__label', { text: 'Installed PHP' }),
+    list,
+    usable.length
+      ? h('div.field__hint', { text: `${plural(usable.length, 'runtime')} usable. Each was probed by running php -r "echo PHP_MAJOR_VERSION", not read off a folder name.` })
+      : found.length
+        ? h('div.field__hint', { text: `Nothing here is new enough. PocketMine-MP needs PHP ${min} or newer.` })
+        : null
+  );
+}
+
 /* ------------------------------- per server ----------------------------- */
 
 function serverJavaPanel() {
@@ -232,8 +351,18 @@ function commandPanel() {
     const res = await window.env.server.dryRun(record.id);
     if (!res?.ok) { box.textContent = res?.error || 'could not work out the command line'; return; }
     const notes = [];
-    if (!res.jar) notes.push('(no jar installed yet - start will refuse)');
+    // each note is named in the software's own terms; "no jar installed" on a
+    // Bedrock server would describe a file that does not exist
+    const noun = runtimeNoun(record.type);
+    if (!res.jar) notes.push(`(no ${noun} installed yet - start will refuse)`);
     if (!res.eula) notes.push('(the EULA has not been accepted yet - start will refuse)');
+    if (res.runtimeMissing) {
+      notes.push(
+        res.runtimeKind === 'php'
+          ? `(php.exe is a placeholder: no usable PHP was found - set one in the PHP panel above)`
+          : `(java.exe is a placeholder: no usable JVM was found yet - one downloads on start)`
+      );
+    }
     if (res.risk) notes.push('(this JVM is newer than the release targets and may not work)');
     box.textContent = [`cwd: ${res.cwd}`, res.argv.join(' '), ...notes].join('\n');
   };
@@ -311,8 +440,8 @@ export function renderSettings(host) {
       h('div.section',
         h('div.section__head', h('div.section__title', icon('cpu'), 'Memory'), h('div.section__line')),
         h('div.grid.grid--2',
-          panel('Memory', 'cpu', memoryPanel()),
-          panel('Java runtime', 'cpu', javaPanel())
+          panel('Memory', 'cpu', memoryPanel(), 'memory'),
+          panel('Java runtime', 'cpu', javaPanel(), 'java')
         )
       ),
       h('div.section',
@@ -337,14 +466,26 @@ export function renderSettings(host) {
             h('div',
               h('div.kv', h('span.kv__k', { text: 'Installed RAM' }), h('span.kv__v', { text: megabytesToText(settings.totalMemoryMb) })),
               h('div.kv', h('span.kv__k', { text: 'Java runtimes found' }), h('span.kv__v', { text: String(state.jvm.runtimes.length) })),
+              // PHP only appears when a PocketMine server exists, so this row is
+              // conditional rather than showing "0" on a machine that never asked
+              state.servers.some((s) => s.type === 'pocketmine')
+                ? h('div.kv', h('span.kv__k', { text: 'PHP runtimes found' }), h('span.kv__v', { text: String((state.runtime.php || []).length) }))
+                : null,
               h('div.kv', h('span.kv__k', { text: 'Downloaded here' }), h('span.kv__v', { text: (state.jvm.bundled || []).join(', ') || 'none' })),
               h('div.kv', h('span.kv__k', { text: 'Servers' }), h('span.kv__v', { text: String(state.servers.length) })),
-              h('div.kv', h('span.kv__k', { text: 'EnvServer' }), h('span.kv__v', { text: '1.0.0' }))
+              h('div.kv', h('span.kv__k', { text: 'EnvServer' }), h('span.kv__v', { text: state.appVersion || 'unknown' }))
             ),
             state.jvm.loading ? badge('scanning', 'warn') : null
           )
         )
       ),
+      // only rendered when a PocketMine server exists - see phpPanel()
+      state.servers.some((s) => s.type === 'pocketmine')
+        ? h('div.section',
+            h('div.section__head', h('div.section__title', icon('cpu'), 'PHP runtime'), h('div.section__line')),
+            h('div.grid.grid--2', panel('PHP for PocketMine-MP', 'cpu', phpPanel()))
+          )
+        : null,
       h('div.row', { style: { marginTop: '18px' } },
         h('button.btn', { type: 'button', onClick: async () => { await refreshJvmPlan(); await refreshDetail(); toast('Rescanned', 'ok'); } }, icon('refresh'), 'Rescan Java runtimes')),
       h('div.field__hint', { style: { marginTop: '18px' } },

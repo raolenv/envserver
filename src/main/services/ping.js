@@ -1,6 +1,7 @@
 'use strict';
 
 const net = require('net');
+const dgram = require('dgram');
 
 /**
  * Minecraft Server List Ping (status), used to show the real player count and
@@ -161,6 +162,141 @@ function status(host, port, o = {}) {
   });
 }
 
+/**
+ * RakNet unconnected ping, for Bedrock.
+ *
+ * The Java Server List Ping above is TCP and speaks the Java protocol; Bedrock
+ * runs on RakNet over **UDP** and answers a completely different packet. Sending
+ * the Java ping at a Bedrock server therefore gets nothing back, ever - which
+ * would leave every Bedrock server permanently showing "unreachable" on the
+ * dashboard and a player count of zero no matter how many people are playing.
+ *
+ * RakNet's unconnected ping has been unchanged since 2012:
+ *
+ *   out   0x01 | time:u64 | MAGIC:16 | clientGuid:u64
+ *   back  0x1c | time:u64 | MAGIC:16 | infoLen:u16 | info | motdLen:u16 | motd
+ *
+ * `info` is a NUL-separated list: edition, line1, line2, protocol, version,
+ * player count, max players, server GUID. The MOTD after it is JSON.
+ *
+ * @param {string} host
+ * @param {number} port UDP port, 19132 by default
+ * @param {object} [o]
+ * @param {number} [o.timeout]
+ * @returns {Promise<{ok:boolean, online:number, max:number, motd:string, version:string, players:string[], reason?:string}>}
+ */
+function bedrockStatus(host, port, o = {}) {
+  const { timeout = TIMEOUT_MS } = o;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.close();
+      } catch {
+        /* already gone */
+      }
+      resolve(payload);
+    };
+
+    const socket = dgram.createSocket('udp4');
+    socket.on('error', (err) =>
+      finish({ ok: false, online: 0, max: 0, motd: '', version: '', players: [], reason: err.message })
+    );
+    socket.on('message', (buf) => {
+      try {
+        // a pong is 0x1c; anything else is a stray datagram from another game
+        if (buf[0] !== 0x1c) return;
+        if (buf.length < 35) return;
+
+        const infoLen = buf.readUInt16BE(33);
+        if (buf.length < 35 + infoLen) return;
+        const info = buf.toString('utf8', 35, 35 + infoLen);
+
+        const motdStart = 35 + infoLen;
+        const motdLen = buf.length >= motdStart + 2 ? buf.readUInt16BE(motdStart) : 0;
+        const motdJson = buf.toString('utf8', motdStart + 2, motdStart + 2 + motdLen);
+
+        // edition, MOTD line 1, MOTD line 2, protocol, version, online, max, guid
+        const fields = info.split('\0');
+        const [, line1 = '', , protocol = '', version = '', online = '', max = ''] = fields;
+        const motd = flattenMotd(safeJson(motdJson)) || line1;
+
+        finish({
+          ok: true,
+          online: Number(online) || 0,
+          max: Number(max) || 0,
+          motd: String(motd).slice(0, 400),
+          version: version ? `${version} (protocol ${protocol})` : '',
+          players: [],
+        });
+      } catch (err) {
+        finish({ ok: false, online: 0, max: 0, motd: '', version: '', players: [], reason: err.message });
+      }
+    });
+
+    const pingPacket = packetBedrockPing();
+    socket.send(pingPacket, 0, pingPacket.length, Number(port) || 0, host, (err) => {
+      if (err) finish({ ok: false, online: 0, max: 0, motd: '', version: '', players: [], reason: err.message });
+    });
+
+    const timer = setTimeout(
+      () => finish({ ok: false, online: 0, max: 0, motd: '', version: '', players: [], reason: 'timed out' }),
+      timeout
+    );
+    if (timer.unref) timer.unref();
+    // cleared by whichever finishes first; cleared unconditionally on close too
+    socket.on('close', () => clearTimeout(timer));
+  });
+}
+
+/** A Bedrock MOTD is JSON, but a server can and does send a bare string. */
+function safeJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * The 33-byte unconnected ping.
+ *
+ * The timestamp is real rather than a constant because some servers drop a ping
+ * whose time field does not advance between requests, and a constant would make
+ * every sample look like a replay.
+ */
+function packetBedrockPing() {
+  const buf = Buffer.alloc(33);
+  buf[0] = 0x01;
+  buf.writeBigUInt64BE(BigInt(Date.now()), 1);
+  RAKNET_MAGIC.copy(buf, 9);
+  // the client GUID only has to be stable within one session
+  buf.writeBigUInt64BE(0x0000cafe00000000n, 25);
+  return buf;
+}
+
+/**
+ * The RakNet offline message identifier.
+ *
+ * `00ffff00fefefefefdfdfdfd12345678`, byte for byte, as every RakNet
+ * implementation since the original uses. Verified against Bedrock servers
+ * rather than taken on faith.
+ */
+const RAKNET_MAGIC = Buffer.from([0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34, 0x56, 0x78]);
+
+/**
+ * Ask whichever protocol the software actually speaks.
+ *
+ * The kind comes from `runtime.js` rather than from the port number, because a
+ * user can put a Bedrock server on any UDP port they like.
+ */
+function statusFor(kind, host, port, o = {}) {
+  return kind === 'java' ? status(host, port, o) : bedrockStatus(host, port, o);
+}
+
 /** Just "is anything listening on this port". */
 function isPortOpen(host, port, timeout = 1200) {
   return new Promise((resolve) => {
@@ -183,4 +319,17 @@ function isPortOpen(host, port, timeout = 1200) {
   });
 }
 
-module.exports = { status, isPortOpen, writeVarint, readVarint, packet, writeString, flattenMotd, TIMEOUT_MS };
+module.exports = {
+  status,
+  bedrockStatus,
+  statusFor,
+  isPortOpen,
+  writeVarint,
+  readVarint,
+  packet,
+  writeString,
+  flattenMotd,
+  packetBedrockPing,
+  RAKNET_MAGIC,
+  TIMEOUT_MS,
+};

@@ -164,12 +164,17 @@ export function installSoftware({ serverId, serverName = '', mcVersion, build = 
   job.software = sw.id;
   job.sub = serverName ? `Installing into ${serverName}` : `Installing into ${mcVersion}`;
 
-  const call =
-    sw.source === 'vanilla'
-      ? window.env.vanilla.install({ serverId, mcVersion, jobId: job.id })
-      : sw.source === 'purpur'
-        ? window.env.purpur.install({ serverId, mcVersion, build, jobId: job.id })
-        : window.env.paper.install({ serverId, mcVersion, build, jobId: job.id, project: sw.project || sw.source });
+  // one call for every software. main picks the catalogue: a jar for Paper and
+  // vanilla, a zip unpacked into the server folder for Bedrock, a phar for
+  // PocketMine. `software` is sent explicitly because the job may have been
+  // started from the create form, before the record exists to read a type from.
+  const call = window.env.catalog.install({
+    serverId,
+    software: sw.id,
+    mcVersion,
+    build,
+    jobId: job.id,
+  });
 
   call
     .then(async (res) => {

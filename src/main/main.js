@@ -46,6 +46,15 @@ const smokeErrors = [];
 /** `--screenshot-size=980x640` - force a window size for a capture. */
 const shotSizeArg = process.argv.find((a) => a.startsWith('--screenshot-size='));
 
+/** `--screenshot-region=<css selector>` - capture just that element. */
+const shotRegionArg = process.argv.find((a) => a.startsWith('--screenshot-region='));
+
+/** `--screenshot-pad=16` - pixels of breathing room around the region. */
+const shotPadArg = process.argv.find((a) => a.startsWith('--screenshot-pad='));
+
+/** `--screenshot-keep-overlay` - do not dismiss the welcome/terms modal. */
+const shotKeepOverlay = process.argv.includes('--screenshot-keep-overlay');
+
 /**
  * `electron . --probe=<js|file>` - evaluate in the renderer, print, exit.
  *
@@ -207,13 +216,18 @@ function createWindow() {
     restoreBounds = null;
   });
 
-  // Closing the X must not throw away a download in flight or a running server:
-  // hide to the tray instead, and let the user quit properly from there.
+  // Closing the X must not throw away a download in flight or a running server.
+  //
+  // It minimizes rather than hides, and that is the whole point of this fix. A
+  // hidden window cannot be brought back by clicking the taskbar button, so a
+  // hidden window plus a missing tray icon is a process the user can see and
+  // cannot reach - which is what made EnvServer look like it was closing itself.
+  // A minimized window is one click away from anywhere in Windows.
   win.on('close', (event) => {
     if (quitting || isSmoke) return;
     if (!shouldHideToTray()) return;
     event.preventDefault();
-    win.hide();
+    if (!win.isMinimized()) win.minimize();
     emitToRenderer('window:hidden-to-tray');
   });
 }
@@ -228,7 +242,22 @@ function emitToRenderer(channel, payload) {
 }
 
 function getWindowState() {
-  return { maximized: isMaximized(), fullScreen: win.isFullScreen() };
+  const minimized = win.isMinimized();
+  const visible = win.isVisible();
+  return {
+    maximized: isMaximized(),
+    fullScreen: win.isFullScreen(),
+    minimized,
+    visible,
+    focused: win.isFocused(),
+    // The one that matters, and the reason `visible` is not enough on its own:
+    // on Windows a *minimized* window already reports isVisible() === false,
+    // because it genuinely is not on screen - yet clicking its taskbar button
+    // restores it perfectly well. A *hidden* window is the state that strands
+    // the app: still no button, and Windows will not restore it. So reachability
+    // is "visible OR minimized", and it is this flag the window probe asserts.
+    reachable: visible || minimized,
+  };
 }
 
 /* ---------------------------- window chrome ---------------------------- */
@@ -287,8 +316,17 @@ function toggleMaximize() {
 }
 
 /**
- * A frameless window has no taskbar button of its own, so Windows keeps showing
- * the console/other windows in the taskbar preview and the icon flickers.
+ * Keep a taskbar button for as long as the process is alive.
+ *
+ * This used to follow `isMinimized()`, which quietly created the worst failure
+ * mode the app had: minimizing removed the taskbar button, and closing the window
+ * called `hide()`, which Windows cannot undo from the taskbar. So clicking the
+ * EnvServer icon did nothing visible, the window looked closed, and the only way
+ * back was a tray icon that is not guaranteed to exist. Users reasonably read
+ * that as "the app closed by itself".
+ *
+ * The taskbar button is the one recovery route Windows always provides. The tray
+ * is a convenience on top of it, not a substitute, so the button stays.
  *
  * Deliberately NOT wired to `resize`: `setSkipTaskbar` recreates the taskbar
  * button, and doing that from a resize handler stalls the main process once a
@@ -297,7 +335,7 @@ function toggleMaximize() {
 function syncTaskbar() {
   if (!win || win.isDestroyed()) return;
   try {
-    win.setSkipTaskbar(win.isMinimized());
+    win.setSkipTaskbar(false);
   } catch {
     /* not fatal, the window still works */
   }
@@ -335,7 +373,9 @@ ipcMain.on('window:close', () => {
   win.close();
 });
 ipcMain.handle('window:get-state', () =>
-  win && !win.isDestroyed() ? getWindowState() : { maximized: false, fullScreen: false }
+  win && !win.isDestroyed()
+    ? getWindowState()
+    : { maximized: false, fullScreen: false, minimized: false, visible: false, focused: false, reachable: false }
 );
 
 /* ---------------------------- dev utilities ---------------------------- */
@@ -358,18 +398,25 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 /** `electron . --screenshot=<file>` - render, wait for fonts, save a PNG, exit. */
 async function captureScreenshot(outPath) {
   try {
-    // dismiss the welcome first, or the screenshot is a picture of a modal
     await js('window.__envReady === true', { label: 'ready', timeout: 30000 });
-    await js(`(() => {
-      const o = document.getElementById('overlay');
-      if (!o || o.hidden) return false;
-      const b = [...o.querySelectorAll('button')].find((x) => /default|skip/i.test(x.textContent));
-      if (b) b.click();
-      return true;
-    })()`, { label: 'dismiss welcome' });
-    await wait(1500);
-    await js('document.fonts.ready.then(() => true)');
-    await wait(900);
+
+    // Dismiss the welcome first, or every shot is a picture of a modal. The
+    // welcome and the terms are the exception: those shots exist to document
+    // them, so they are captured with the modal still up.
+    if (shotKeepOverlay) {
+      await wait(600);
+    } else {
+      await js(`(() => {
+        const o = document.getElementById('overlay');
+        if (!o || o.hidden) return false;
+        const b = [...o.querySelectorAll('button')].find((x) => /default|skip/i.test(x.textContent));
+        if (b) b.click();
+        return true;
+      })()`, { label: 'dismiss welcome' });
+      await wait(1500);
+      await js('document.fonts.ready.then(() => true)');
+      await wait(900);
+    }
 
     // optional: navigate to a specific view before capturing
     if (shotViewArg) {
@@ -378,7 +425,22 @@ async function captureScreenshot(outPath) {
         // drive the already-booted app, with no reload: a reload throws away the
         // globals these hooks live on and lands back on the default view, which
         // is how the nav shots used to come out as five copies of one screen
-        await js(view.slice('run::'.length), { label: 'shot setup' });
+        //
+        // `await` inside the try matters: the snippet is an async IIFE, so
+        // without it this returns before the setup has done anything, a
+        // rejection inside it is swallowed, and the crop then measures a view
+        // that has not rendered yet. That is exactly how the crops used to fail
+        // with no error anywhere.
+        const r = await js(`(async () => {
+          try {
+            await ${view.slice('run::'.length)};
+            return 'ok';
+          } catch (e) {
+            return 'threw: ' + (e && e.stack ? e.stack.split('\\n').slice(0, 3).join(' | ') : String(e));
+          }
+        })()`, { label: 'shot setup', timeout: 90_000 });
+        if (r && r.__error) throw new Error(`shot setup did not finish: ${r.__error}`);
+        if (typeof r === 'string' && r !== 'ok') throw new Error(`shot setup ${r}`);
         await wait(1200);
       } else if (view.startsWith('env::')) {
         const snippet = view.slice('env::'.length);
@@ -402,7 +464,57 @@ async function captureScreenshot(outPath) {
       }
     }
 
-    const image = await win.webContents.capturePage();
+    // optional: capture one element instead of the whole window
+    //
+    // A README picture is documentation, and a full-window screenshot of a
+    // console view is mostly sidebar and empty space. Cropping to the thing
+    // being documented is the difference between a reader seeing the feature and
+    // seeing a screenshot of an application.
+    let rect = null;
+    if (shotRegionArg) {
+      const selector = shotRegionArg.slice('--screenshot-region='.length);
+      const pad = Number(shotPadArg) || 0;
+
+      // A view repaints asynchronously after setView(), and the element a crop
+      // targets may not exist for a frame or two. Retrying here is far better
+      // than failing the whole capture over a race.
+      let box = null;
+      for (let i = 0; i < 25 && !box; i++) {
+        box = await js(`(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return r.width && r.height ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+        })()`, { label: 'shot region' });
+        if (!box) await wait(200);
+      }
+
+      if (!box) {
+        // Say what *is* on screen. "Matched nothing" on its own sent this down
+        // the wrong path twice - the real answer was usually that the view had
+        // bounced to a placeholder because no server was selected.
+        const seen = await js(`(() => {
+          const body = document.getElementById('content-body');
+          const ov = document.getElementById('overlay');
+          return {
+            view: window.__envProbeView || null,
+            bodyChildren: body ? [...body.children].map((n) => n.className || n.tagName) : null,
+            overlayOpen: Boolean(ov && !ov.hidden),
+            overlayChildren: ov && !ov.hidden ? [...ov.querySelectorAll('*')].slice(0, 6).map((n) => n.className || n.tagName) : null,
+          };
+        })()`, { label: 'shot region report' });
+        throw new Error(`--screenshot-region matched nothing with a size: ${selector} - ${JSON.stringify(seen)}`);
+      }
+      const [vw, vh] = win.getContentSize();
+      rect = {
+        x: Math.max(0, Math.round(box.x - pad)),
+        y: Math.max(0, Math.round(box.y - pad)),
+        width: Math.min(Math.round(box.w + pad * 2), vw),
+        height: Math.min(Math.round(box.h + pad * 2), vh),
+      };
+    }
+
+    const image = rect ? await win.webContents.capturePage(rect) : await win.webContents.capturePage();
     fs.writeFileSync(outPath, image.toPNG());
     const { width, height } = image.getSize();
     console.log(`SCREENSHOT ${outPath} (${width}x${height})`);
@@ -476,6 +588,22 @@ async function runSmokeTest() {
   }
   await wait(800);
 
+  // With the terms screen now wired up, an unaccepted install shows Terms and
+  // refuses every other view. Agree the way a person would, so the rest of the
+  // smoke run exercises the app instead of bouncing off the gate.
+  const agreed = await js(`(() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => /agree/i.test(b.textContent));
+    if (btn) { btn.click(); return 'agreed'; }
+    return 'terms already accepted or not shown';
+  })()`, { label: 'accept terms' });
+  await wait(900);
+  for (let i = 0; i < 40; i++) {
+    const still = await js('Boolean(document.querySelector(".terms"))', { label: 'terms still shown?', timeout: 2000 });
+    if (still !== true) break;
+    await wait(250);
+  }
+  await wait(400);
+
   try {
     const report = await js(`(() => {
       const vis = (sel) => {
@@ -508,7 +636,16 @@ async function runSmokeTest() {
         const plan = await window.env.java.plan();
         out.runtimes = plan.runtimes.length;
         out.plan = plan.plan.length;
-        out.paperVersions = (await window.env.paper.versions(false)).versions.length;
+        // \`catalog.versions\` rather than the old \`paper.versions\`: one
+        // namespace for every software, so this proves the dispatch works and
+        // not merely that one API is still wired up
+        out.versions = (await window.env.catalog.versions('paper', false)).versions.length;
+        // and the runtimes the Bedrock software needs, which is the part most
+        // likely to be missing and is not exercised by a Paper-only smoke run
+        const rt = await window.env.runtime.overview();
+        out.runtimeKinds = Object.fromEntries(Object.entries(rt.software || {}).map(([id, r]) => [id, r.kind]));
+        out.bedrockPort = (rt.ports || {}).bedrock;
+        out.phpFound = (rt.php || []).length;
       } catch (err) {
         out.threw = String(err && err.message || err);
       }
@@ -688,6 +825,7 @@ async function runSmokeTest() {
 
     report.rendererErrors = smokeErrors;
     report.welcome = dismissed;
+    report.terms = agreed;
     console.log('SMOKE ' + JSON.stringify(report, null, 2));
 
     if (smokeErrors.length) {
@@ -850,9 +988,13 @@ function showWindow() {
     createWindow();
     return;
   }
-  if (win.isMinimized()) win.restore();
+  // show() before restore(), not after: restore() on a hidden window is a no-op
+  // on Windows, and that is how a window could end up neither visible nor
+  // restorable
   if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
   win.focus();
+  if (!win.isFocused()) win.flashFrame(true);
 }
 
 /* ------------------------------ lifecycle ------------------------------ */

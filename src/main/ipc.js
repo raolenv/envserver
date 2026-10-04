@@ -11,6 +11,9 @@ const paper = require('./services/paper');
 const purpur = require('./services/purpur');
 const vanilla = require('./services/vanilla');
 const java = require('./services/java');
+const php = require('./services/php');
+const runtime = require('./services/runtime');
+const catalog = require('./services/catalog');
 const server = require('./services/server');
 const config = require('./services/config');
 const mojang = require('./services/mojang');
@@ -151,6 +154,9 @@ function register() {
       dataDir: paths.base(),
       serversDir: paths.serversRootDir(),
       runningIds: server.runningIds(),
+      // read from the running app rather than written into a source file: the
+      // terms screen used to carry a hard-coded 1.0.0 and quietly went stale
+      appVersion: app.getVersion(),
     };
   });
 
@@ -173,19 +179,21 @@ function register() {
 
   handle('servers:list', async () => ({
     ok: true,
-    // jar state travels with each record so the sidebar and the Versions list
-    // can tell installed from available without a call per server
+    // install state travels with each record so the sidebar and the Versions
+    // list can tell installed from available without a call per server. It used
+    // to be hardcoded to the Paper jar, which reported every Bedrock server as
+    // "no jar installed" forever.
     servers: store.listServers().map((record) => ({
       ...record,
-      jarInstalled: paper.installedInfo(record.id).installed,
-      jarSize: paper.installedInfo(record.id).size,
+      jarInstalled: runtime.installState(record.id, record.type).installed,
+      jarSize: runtime.installState(record.id, record.type).size,
     })),
     runningIds: server.runningIds(),
   }));
 
   handle('servers:create', (opts) => {
     const record = store.createServer(opts);
-    config.seedDefaults(record.id, { port: record.port, motd: `${record.name} - an EnvServer server` });
+    config.seedDefaults(record.id, { port: record.port, motd: `${record.name} - an EnvServer server`, software: record.type });
     return { ok: true, server: record };
   });
 
@@ -215,43 +223,91 @@ function register() {
   handle('servers:detail', async ({ id }) => {
     const sid = paths.segment(id);
     const record = store.requireServer(sid);
+    const rt = runtime.forSoftware(record.type);
 
     const props = config.readProperties(paths.serverProperties(sid));
     const settings = store.read();
-    const requiredMajor = paper.requiredJava(record.mcVersion, record.type);
-    const list = await runtimes();
-    const resolution = record.mcVersion
-      ? await java.resolveFor({
-          requiredMajor,
-          pinned: record.javaPath || settings.javaPerServer[sid] || '',
-          javaPath: settings.javaPath,
-          runtimes: list,
-        })
-      : null;
 
-    const meta = record.mcVersion ? paper.cachedMeta(record.mcVersion, record.type) : null;
+    // Bedrock and PocketMine have no JVM in the picture at all, so asking
+    // about Java for them produces either a false "install a JDK" warning or, on
+    // a machine with no Java, a blocking error for a server that does not care.
+    const needsJava = rt.kind === 'java';
+    const requiredMajor = needsJava ? paper.requiredJava(record.mcVersion, record.type) : 0;
+    const list = needsJava ? await runtimes() : [];
+    const resolution =
+      needsJava && record.mcVersion
+        ? await java.resolveFor({
+            requiredMajor,
+            pinned: record.javaPath || settings.javaPerServer[sid] || '',
+            javaPath: settings.javaPath,
+            runtimes: list,
+          })
+        : null;
+
+    // PocketMine's runtime is PHP, found the same way Java is and reported the
+    // same way, so the dashboard can say what will actually run
+    const phpRuntime =
+      rt.kind === 'php'
+        ? await php.resolveFor({ pinned: record.phpPath || settings.phpPath || '' }).catch(() => null)
+        : null;
+
+    const meta = needsJava && record.mcVersion ? paper.cachedMeta(record.mcVersion, record.type) : null;
     const status = server.status(sid);
+    const files = runtime.installState(sid, record.type);
+    const eulaOk = rt.eula ? config.readEula(paths.serverEula(sid)) : true;
 
     return {
       ok: true,
       server: record,
-      jar: paper.installedInfo(sid),
-      eula: config.readEula(paths.serverEula(sid)),
+      // kept under the old key so the views that ask "is it installed" do not
+      // each have to learn a new name; `files` is the same object
+      jar: files,
+      files,
+      runtime: runtime.describe(record.type),
+      eula: eulaOk,
       properties: props,
       port: Number(props.values['server-port']) || record.port,
       onlineMode: String(props.values['online-mode'] ?? 'true').toLowerCase() === 'true',
       java: {
+        // false rather than an error for a Bedrock server: "no Java needed" and
+        // "Java missing" are different facts and the dashboard shows them
+        // differently
+        needed: needsJava,
         requiredMajor,
         recommended: meta?.recommendedFlags || [],
-        supportStatus: meta?.supportStatus || 'UNKNOWN',
+        supportStatus: meta?.supportStatus || (needsJava ? 'UNKNOWN' : ''),
         supportEnd: meta?.supportEnd || '',
         resolved: resolution,
-        explain: resolution
-          ? resolution.match === 'newer' && resolution.risk
-            ? java.explainMismatch(requiredMajor, resolution.major, record.mcVersion)
-            : ''
-          : java.explainMissing(requiredMajor, record.mcVersion),
+        explain: !needsJava
+          ? ''
+          : resolution
+            ? resolution.match === 'newer' && resolution.risk
+              ? java.explainMismatch(requiredMajor, resolution.major, record.mcVersion)
+              : ''
+            : java.explainMissing(requiredMajor, record.mcVersion),
       },
+      php: {
+        needed: rt.kind === 'php',
+        min: `${php.MIN.major}.${php.MIN.minor}`,
+        resolved: phpRuntime
+          ? { version: phpRuntime.version, exe: phpRuntime.exe, ok: phpRuntime.ok }
+          : null,
+        explain: rt.kind !== 'php' ? '' : phpRuntime ? (phpRuntime.ok ? '' : php.explainMissing(phpRuntime)) : php.explainMissing(null),
+      },
+      /** Everything that would stop a start right now, as data not as errors. */
+      blockers: runtime.preflight(record, {
+        eulaOk,
+        java: needsJava
+          ? resolution
+            ? { ok: true }
+            : { ok: false, reason: java.explainMissing(requiredMajor, record.mcVersion) }
+          : null,
+        php: rt.kind === 'php'
+          ? phpRuntime
+            ? { ok: phpRuntime.ok, reason: phpRuntime.ok ? '' : php.explainMissing(phpRuntime) }
+            : { ok: false, reason: php.explainMissing(null) }
+          : null,
+      }),
       disk: {
         total: paths.dirSize(paths.serverDir(sid)),
         world: paths.exists(paths.serverWorld(sid)) ? paths.dirSize(paths.serverWorld(sid)) : 0,
@@ -263,53 +319,69 @@ function register() {
     };
   });
 
-  /* -------------------------------- paper ------------------------------- */
+  /* ------------------------------- catalogue ---------------------------- */
 
-  handle('paper:versions', async ({ refresh, project }) => {
-    const res = await paper.listVersions({ refresh, project });
+  // One namespace for every server software. This used to be three -
+  // `paper:*`, `vanilla:*`, `purpur:*` - which meant the renderer had to branch
+  // on which software it was talking to, and meant Spigot and CraftBukkit had no
+  // way to be installed at all despite being offered in the create form. Now a
+  // software id is all it takes, and Bedrock is two more ids rather than two
+  // more code paths.
+  handle('catalog:versions', async ({ software, refresh }) => {
+    const res = await catalog.listVersions(software, { refresh });
     return { ...res, ok: true };
   });
 
-  handle('paper:builds', async ({ mcVersion, refresh, project }) => {
-    const builds = await paper.listBuilds(mcVersion, { refresh, project });
-    return { ok: true, builds, meta: paper.cachedMeta(mcVersion, project) };
+  handle('catalog:builds', async ({ software, mcVersion, refresh }) => {
+    const { builds, meta } = await catalog.listBuilds(software, mcVersion, { refresh });
+    return { ok: true, builds, meta };
   });
 
-  handle('paper:install', async ({ serverId, mcVersion, build, jobId, project }) => {
+  handle('catalog:install', async ({ serverId, software, mcVersion, build, jobId }) => {
     const sid = paths.segment(serverId);
     const record = store.requireServer(sid);
     const target = mcVersion || record.mcVersion;
     if (!target) throw new Error('pick a Minecraft version first');
 
-    const proj = project || record.type || 'paper';
+    // the software may be passed explicitly (the Versions view knows) or taken
+    // from the record (the dashboard's quick install does not)
+    const sw = String(software || record.type || 'paper').toLowerCase();
+    const cat = catalog.forSoftware(sw);
+
     // pull the metadata first so the UI can show what Java the release needs
-    await paper.versionMeta(target, { project: proj }).catch(() => null);
+    if (typeof cat.versionMeta === 'function') {
+      await cat.versionMeta(target, { project: sw }).catch(() => null);
+    }
 
     const chosen = build ? Number(build) : null;
     const job = jobSignal(jobId);
 
     try {
-      const res = await paper.installJar({
+      const res = await cat.install({
         serverId: sid,
         mcVersion: target,
         build: chosen,
-        project: proj,
+        project: sw,
         signal: job.signal,
-        onProgress: (p) => emit('evt:download', { jobId, scope: 'paper', id: sid, mcVersion: target, ...p }),
+        onProgress: (p) => emit('evt:download', { jobId, scope: sw, id: sid, mcVersion: target, ...p }),
       });
 
-      const patch = { mcVersion: target };
-      if (res.build) patch.build = res.build;
-      if (proj) patch.type = proj;
+      const patch = { mcVersion: target, type: sw };
+      if (res.build && /^\d+$/.test(String(res.build))) patch.build = Number(res.build);
       store.updateServer(sid, patch);
 
       if (!paths.exists(paths.serverProperties(sid))) {
-        config.seedDefaults(sid, { port: record.port, motd: `${record.name} - an EnvServer server` });
+        config.seedDefaults(sid, { port: record.port, motd: `${record.name} - an EnvServer server`, software: record.type });
       }
 
-      if (project) patch.type = project;
-
-      return { ok: true, ...res, server: store.getServer(sid), meta: paper.cachedMeta(target, project || record.type) };
+      return {
+        ok: true,
+        ...res,
+        server: store.getServer(sid),
+        // the release's Java requirement and Paper's recommended flags, so the
+        // Versions view can show them without a second round trip
+        meta: typeof cat.meta === 'function' ? cat.meta(target) || null : null,
+      };
     } catch (err) {
       // a cancelled download is not a failure worth a scary message
       if (err?.name === 'CancelledError' || /cancelled/i.test(err?.message || '')) {
@@ -330,109 +402,56 @@ function register() {
     return { ok: true };
   });
 
-  handle('paper:remove-jar', async ({ id }) => {
-    const sid = paths.segment(id);
-    if (server.isRunning(sid)) return { ok: false, error: 'stop the server before removing its jar' };
-    return paper.removeJar(sid);
-  });
-
-  /* ------------------------------- vanilla ------------------------------ */
-
-  handle('vanilla:versions', async ({ refresh }) => {
-    const res = await vanilla.listVersions({ refresh });
-    return { ...res, ok: true };
-  });
-
-  handle('vanilla:install', async ({ serverId, mcVersion, jobId }) => {
+  handle('catalog:remove', async ({ serverId }) => {
     const sid = paths.segment(serverId);
+    if (server.isRunning(sid)) return { ok: false, error: 'stop the server before removing its files' };
     const record = store.requireServer(sid);
-    const target = mcVersion || record.mcVersion;
-    if (!target) throw new Error('pick a Minecraft version first');
-
-    const job = jobSignal(jobId);
-
-    try {
-      const res = await vanilla.installJar({
-        serverId: sid,
-        mcVersion: target,
-        signal: job.signal,
-        onProgress: (p) => emit('evt:download', { jobId, scope: 'vanilla', id: sid, mcVersion: target, ...p }),
-      });
-
-      const patch = { mcVersion: target, type: 'vanilla' };
-      store.updateServer(sid, patch);
-
-      if (!paths.exists(paths.serverProperties(sid))) {
-        config.seedDefaults(sid, { port: record.port, motd: `${record.name} - an EnvServer server` });
-      }
-
-      return { ok: true, ...res, server: store.getServer(sid) };
-    } catch (err) {
-      if (err?.name === 'CancelledError' || /cancelled/i.test(err?.message || '')) {
-        return { ok: false, cancelled: true, error: 'cancelled' };
-      }
-      throw err;
-    } finally {
-      job.release();
-    }
-  });
-
-  /* ------------------------------- purpur ------------------------------- */
-
-  handle('purpur:versions', async ({ refresh }) => {
-    const res = await purpur.listVersions({ refresh });
+    const cat = catalog.forSoftware(record.type);
+    const res = await cat.remove(sid);
     return { ...res, ok: true };
   });
 
-  handle('purpur:builds', async ({ mcVersion, refresh }) => {
-    const builds = await purpur.listBuilds(mcVersion, { refresh });
+  /* -------------------------- runtime information ------------------------ */
+
+  /**
+   * What each software needs to run, and whether this machine has it.
+   *
+   * The dashboard asks for this so the memory and runtime read-outs can say
+   * "Java 21" or "PHP 8.3" or "no JVM involved" without each view working that
+   * out for itself - and so a Bedrock server is never shown a Java warning that
+   * does not apply to it.
+   */
+  handle('runtime:overview', async () => {
+    const settings = store.read();
+    const javaList = await java.listRuntimes({ javaPath: settings.javaPath }).catch(() => []);
+    const phpList = await php.listRuntimes({ phpPath: settings.phpPath }).catch(() => []);
+
+    const software = {};
+    for (const id of runtime.ids()) {
+      software[id] = runtime.describe(id);
+    }
+
     return {
       ok: true,
-      builds,
-      meta: {
-        javaMajor: purpur.requiredJava(mcVersion),
-        recommendedFlags: [],
-        supportStatus: 'SUPPORTED',
-        supportEnd: '',
-        buildCount: builds.length,
-      },
+      software,
+      java: javaList.map((r) => ({ major: r.major, version: r.version, source: r.source || 'system', exe: r.exe, ok: r.ok })),
+      php: phpList.map((r) => ({ version: r.version, exe: r.exe, ok: r.ok })),
+      phpMin: `${php.MIN.major}.${php.MIN.minor}`,
+      ports: Object.fromEntries(runtime.ids().map((id) => [id, catalog.defaultPort(id)])),
     };
   });
 
-  handle('purpur:install', async ({ serverId, mcVersion, build, jobId }) => {
-    const sid = paths.segment(serverId);
-    const record = store.requireServer(sid);
-    const target = mcVersion || record.mcVersion;
-    if (!target) throw new Error('pick a Minecraft version first');
-
-    const job = jobSignal(jobId);
-
-    try {
-      const res = await purpur.installJar({
-        serverId: sid,
-        mcVersion: target,
-        build: build ? Number(build) : null,
-        signal: job.signal,
-        onProgress: (p) => emit('evt:download', { jobId, scope: 'purpur', id: sid, mcVersion: target, ...p }),
-      });
-
-      const patch = { mcVersion: target, type: 'purpur' };
-      if (res.build) patch.build = res.build;
-      store.updateServer(sid, patch);
-
-      if (!paths.exists(paths.serverProperties(sid))) {
-        config.seedDefaults(sid, { port: record.port, motd: `${record.name} - an EnvServer server` });
-      }
-
-      return { ok: true, ...res, server: store.getServer(sid) };
-    } catch (err) {
-      if (err?.name === 'CancelledError' || /cancelled/i.test(err?.message || '')) {
-        return { ok: false, cancelled: true, error: 'cancelled' };
-      }
-      throw err;
-    } finally {
-      job.release();
+  /** Set the PHP to use for PocketMine servers, or '' to auto-detect again. */
+  handle('php:set-path', async ({ phpPath }) => {
+    const value = String(phpPath || '').trim();
+    if (value) {
+      const found = await php.probe(/php\.exe$/i.test(value) ? value : path.join(value, 'php.exe'));
+      if (!found) return { ok: false, error: 'there is no working php.exe at that path' };
+      store.updateSettings({ phpPath: found.exe });
+      return { ok: true, runtime: found };
     }
+    store.updateSettings({ phpPath: '' });
+    return { ok: true };
   });
 
   /* --------------------------------- java ------------------------------- */
@@ -451,6 +470,10 @@ function register() {
 
     const plan = [];
     for (const record of settings.servers) {
+      // a Bedrock server contributes nothing to the Java plan; listing it would
+      // put a "needs Java 21" row on the Settings page for a server that has no
+      // JVM in it, and count it towards the "missing" summary
+      if (runtime.forSoftware(record.type).kind !== 'java') continue;
       const requiredMajor = paper.requiredJava(record.mcVersion, record.type);
       const resolution = record.mcVersion
         ? await java.resolveFor({
@@ -516,34 +539,52 @@ function register() {
   handle('server:start', async ({ id }) => {
     const sid = paths.segment(id);
     const record = store.requireServer(sid);
+    const rt = runtime.forSoftware(record.type);
 
     if (!record.mcVersion) throw new Error('pick a Minecraft version for this server first');
-    if (!paths.exists(paths.serverJar(sid))) {
-      throw new Error('this server has no Paper jar yet - install one from the Versions view');
+
+    const files = runtime.installState(sid, record.type);
+    if (!files.installed) {
+      throw new Error(
+        rt.kind === 'java'
+          ? 'this server has no Paper jar yet - install one from the Versions view'
+          : `this server has no ${rt.missing} yet - install one from the Versions view`
+      );
     }
-    if (!config.readEula(paths.serverEula(sid))) {
+
+    // only the Mojang software that writes an eula.txt is gated on it
+    if (rt.eula && !config.readEula(paths.serverEula(sid))) {
       throw new Error('accept the Minecraft EULA for this server first');
     }
 
     const settings = store.read();
-    const requiredMajor = paper.requiredJava(record.mcVersion, record.type);
-    const meta = paper.cachedMeta(record.mcVersion, record.type);
+    const needsJava = rt.kind === 'java';
+    const requiredMajor = needsJava ? paper.requiredJava(record.mcVersion, record.type) : 0;
+    const meta = needsJava ? paper.cachedMeta(record.mcVersion, record.type) : null;
 
-    const javaResult = await ensureJava(requiredMajor, sid);
-    if (!javaResult.ok) throw new Error(javaResult.error);
+    // auto-installing a JDK is only ever the right answer for Java. Offering it
+    // for PocketMine would download 200 MB of runtime for a server that will
+    // still refuse to start because it needs PHP instead.
+    let javaDownloaded = false;
+    if (needsJava) {
+      const javaResult = await ensureJava(requiredMajor, sid);
+      if (!javaResult.ok) throw new Error(javaResult.error);
+      javaDownloaded = javaResult.downloaded;
+    }
 
     const status = await server.start(record, {
       requiredMajor,
-      recommended: meta.recommendedFlags,
+      recommended: meta?.recommendedFlags || [],
       useRecommendedFlags: settings.useRecommendedFlags,
       extraArgs: record.extraArgs || settings.extraArgs,
       javaPath: settings.javaPath,
+      phpPath: record.phpPath || settings.phpPath,
       memory: record.memory,
       autoBackupHours: settings.autoBackupHours,
     });
 
     store.updateServer(sid, { lastStartedAt: Date.now() });
-    return { ok: true, status, javaDownloaded: javaResult.downloaded, requiredMajor };
+    return { ok: true, status, javaDownloaded, requiredMajor, runtimeKind: rt.kind };
   });
 
   handle('server:stop', async ({ id, force }) => {
@@ -559,31 +600,67 @@ function register() {
   handle('server:dry-run', async ({ id }) => {
     const sid = paths.segment(id);
     const record = store.requireServer(sid);
-    const requiredMajor = paper.requiredJava(record.mcVersion, record.type);
-    const resolution = record.mcVersion
-      ? await java.resolveFor({
-          requiredMajor,
-          pinned: record.javaPath || store.read().javaPerServer[sid] || '',
-          javaPath: store.read().javaPath,
-          runtimes: await runtimes(),
-        })
-      : null;
-    const args = server.buildArgs({
+    const rt = runtime.forSoftware(record.type);
+    const settings = store.read();
+
+    const resolution =
+      rt.kind === 'java' && record.mcVersion
+        ? await java.resolveFor({
+            requiredMajor: paper.requiredJava(record.mcVersion, record.type),
+            pinned: record.javaPath || settings.javaPerServer[sid] || '',
+            javaPath: settings.javaPath,
+            runtimes: await runtimes(),
+          })
+        : null;
+
+    const phpRuntime =
+      rt.kind === 'php' ? await php.resolveFor({ pinned: record.phpPath || settings.phpPath || '' }).catch(() => null) : null;
+
+    // The executable the launcher would use. When the runtime is missing, the
+    // preview still has to show the *shape* of the command rather than a path to
+    // the thing being launched: printing the phar's own path as the executable
+    // would read as "run PocketMine-MP.phar directly", which Windows cannot do.
+    const previewExe =
+      rt.kind === 'java'
+        ? resolution?.javaExe || 'java.exe'
+        : rt.kind === 'php'
+          ? phpRuntime?.exe || 'php.exe'
+          : runtime.entryPath(sid, record.type);
+
+    // the same plan the launcher will use, so what this shows is what happens
+    const plan = server.launchPlan(record, {
+      exe: previewExe,
       memory: record.memory,
-      recommended: store.read().useRecommendedFlags ? paper.cachedMeta(record.mcVersion, record.type).recommendedFlags : [],
-      extra: record.extraArgs || store.read().extraArgs,
+      recommended: settings.useRecommendedFlags ? paper.cachedMeta(record.mcVersion, record.type)?.recommendedFlags || [] : [],
+      extra: record.extraArgs || settings.extraArgs,
       nogui: true,
     });
+
     return {
       ok: true,
       cwd: paths.serverDir(sid),
-      jar: paths.exists(paths.serverJar(sid)),
-      eula: config.readEula(paths.serverEula(sid)),
-      requiredMajor,
+      runtimeKind: rt.kind,
+      jar: runtime.installState(sid, record.type).installed,
+      entry: rt.entry,
+      eula: rt.eula ? config.readEula(paths.serverEula(sid)) : true,
+      requiredMajor: rt.kind === 'java' ? paper.requiredJava(record.mcVersion, record.type) : 0,
       javaExe: resolution?.javaExe || '',
       match: resolution?.match || 'none',
       risk: Boolean(resolution?.risk),
-      argv: [resolution?.javaExe || '<java>', ...args],
+      phpExe: phpRuntime?.exe || '',
+      phpVersion: phpRuntime?.version || '',
+      /**
+       * True when the preview names a runtime that is not actually installed.
+       *
+       * The Command preview panel says so, because a command line that cannot run
+       * presented exactly like one that can is the most misleading thing this
+       * screen could show.
+       */
+      runtimeMissing:
+        (rt.kind === 'java' && !resolution) ||
+        (rt.kind === 'php' && !phpRuntime),
+      exe: plan.exe,
+      argv: [plan.exe, ...plan.args],
     };
   });
 
@@ -636,6 +713,14 @@ function register() {
 
   handle('config:set-eula', ({ id, accepted }) => {
     const sid = paths.segment(id);
+    const record = store.getServer(sid);
+    const rt = runtime.forSoftware(record?.type || 'paper');
+
+    // Bedrock and PocketMine have no eula.txt. Answering `true` rather than
+    // writing a file nobody reads keeps the Config view's EULA row honest
+    // instead of letting the user tick a box that governs nothing.
+    if (!rt.eula) return { ok: true, eula: true, notApplicable: true };
+
     config.writeEula(paths.serverEula(sid), accepted);
     return { ok: true, eula: accepted };
   });

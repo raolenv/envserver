@@ -1,13 +1,16 @@
 {
   "name": "envserver",
   "productName": "EnvServer",
-  "version": "1.1.0",
-  "description": "EnvServer - local Minecraft server manager for Windows (Paper, Folia, Purpur, Vanilla, Spigot, CraftBukkit)",
-  "author": "raolenv",
+  "version": "1.2.0",
+  "description": "EnvServer - local Minecraft server manager for Windows (Paper, Folia, Purpur, Vanilla, Spigot, CraftBukkit, PocketMine-MP, Bedrock Dedicated Server)",
+  "author": {
+    "name": "RaolENV",
+    "email": "raoldotenv@gmail.com"
+  },
   "repository": { "type": "git", "url": "https://github.com/raolenv/envserver.git" },
   "homepage": "https://github.com/raolenv/envserver#readme",
   "bugs": { "url": "https://github.com/raolenv/envserver/issues" },
-  "keywords": ["minecraft", "server", "paper", "purpur", "spigot", "folia", "manager", "windows", "electron"],
+  "keywords": ["minecraft", "server", "paper", "purpur", "spigot", "folia", "bedrock", "pocketmine", "raknet", "manager", "windows", "electron"],
   "main": "src/main/main.js",
   "license": "MIT",
   "scripts": {
@@ -31,6 +34,7 @@
   "build": {
     "appId": "com.envserver.app",
     "productName": "EnvServer",
+    "copyright": "Copyright (c) 2026 RaolENV",
     "directories": {
       "output": "release"
     },
@@ -43,7 +47,8 @@
         "portable"
       ],
       "icon": "src/renderer/assets/icon.ico",
-      "artifactName": "EnvServer-${version}-${arch}.${ext}"
+      "artifactName": "EnvServer-${version}-${arch}.${ext}",
+      "signAndEditExecutable": true
     },
     "nsis": {
       "oneClick": false,

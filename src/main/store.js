@@ -14,6 +14,20 @@ const paths = require('./services/paths');
  * can be lost by copying it somewhere else.
  */
 
+/**
+ * The default port for a software.
+ *
+ * Kept here as a two-line table rather than pulled from `services/runtime.js` so
+ * the store stays free of service dependencies: reading a setting must not need a
+ * catalogue that might fail to load. `tools/../test` asserts this matches
+ * `runtime.js` and `catalog.js`.
+ */
+const PORTS = { bedrock: 19132, pocketmine: 19132 };
+
+function softwarePort(type, fallback = 25565) {
+  return PORTS[String(type || '').toLowerCase()] || fallback;
+}
+
 const DEFAULTS = {
   /** where server folders live; empty means under the app's data folder */
   serversDir: '',
@@ -29,6 +43,15 @@ const DEFAULTS = {
    * because the user chose it by name.
    */
   javaPerServer: {},
+
+  /**
+   * Global PHP override, for PocketMine-MP.
+   *
+   * Same shape as javaPath and the same reasoning: empty means "find a PHP 8.1+
+   * on this machine". PocketMine is the only Bedrock software that needs one,
+   * because it is the only one written in PHP.
+   */
+  phpPath: '',
 
   /** defaults for a new server */
   memory: { min: 1024, max: 4096 },
@@ -147,6 +170,8 @@ function cleanServer(raw) {
     port: intIn(raw.port, 1, 65535, DEFAULTS.port),
     extraArgs: str(raw.extraArgs, '', 600),
     javaPath: str(raw.javaPath, '', 400),
+    /** only used by PocketMine; harmless on every other software */
+    phpPath: str(raw.phpPath, '', 400),
     createdAt: intIn(raw.createdAt, 0, Number.MAX_SAFE_INTEGER, Date.now()),
     lastStartedAt: intIn(raw.lastStartedAt, 0, Number.MAX_SAFE_INTEGER, 0),
   };
@@ -202,6 +227,7 @@ function cleanSettings(parsed) {
     autoInstallJava: bool(parsed.autoInstallJava, DEFAULTS.autoInstallJava),
     serversDir: str(parsed.serversDir, '', 400),
     javaPath: str(parsed.javaPath, '', 400),
+    phpPath: str(parsed.phpPath, '', 400),
     port: intIn(parsed.port, 1, 65535, DEFAULTS.port),
     extraArgs: str(parsed.extraArgs, '', 600),
     autoBackupHours: Number(parsed.autoBackupHours) > 0 ? Math.min(168, Math.max(0, Number(parsed.autoBackupHours))) : 0,
@@ -294,7 +320,10 @@ function createServer({ name, mcVersion, memory, port, extraArgs, type } = {}) {
     mcVersion: str(mcVersion, '', 30),
     type: cleanType,
     memory: memory || current.memory,
-    port: port === undefined ? current.port : port,
+    // A Bedrock server defaults to 19132 rather than the Java 25565. This is the
+    // one default that follows the software, because getting it wrong produces a
+    // server that starts perfectly and that nobody can join.
+    port: port === undefined ? softwarePort(cleanType, current.port) : port,
     extraArgs: extraArgs === undefined ? current.extraArgs : extraArgs,
     createdAt: Date.now(),
     lastStartedAt: 0,

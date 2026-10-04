@@ -66,6 +66,44 @@ async function getJson(url, { timeout = 30000, retries = 3, signal, headers = nu
   throw lastErr;
 }
 
+/**
+ * Fetch a document that is not JSON.
+ *
+ * Mojang publishes no Bedrock manifest - the only authoritative list of
+ * published Bedrock Dedicated Server zips is embedded in the download page's
+ * HTML - so something has to read a page rather than parse JSON. Same retry and
+ * abort behaviour as getJson, with a size cap: this is a web page, and an
+ * unbounded body is a way to have a bad day.
+ */
+async function getText(url, { timeout = 30000, retries = 3, signal, headers = null, maxBytes = 8 * 1024 * 1024 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(new Error('timeout')), timeout);
+    const onAbort = () => ac.abort(signal.reason);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      const res = await fetch(url, {
+        signal: ac.signal,
+        headers: { 'user-agent': USER_AGENT, ...(headers || {}) },
+      });
+      if (!res.ok) throw new HttpError(res.status, url, await res.text().catch(() => ''));
+      const body = await res.text();
+      if (body.length > maxBytes) throw new Error(`the page at ${url} is larger than EnvServer will read`);
+      return body;
+    } catch (err) {
+      if (signal?.aborted) throw new CancelledError();
+      lastErr = err;
+      if (attempt < retries) await sleep(400 * 2 ** attempt);
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  }
+  throw lastErr;
+}
+
 /** SHA-256 of a file on disk, streamed so a 200 MB jar never lands in memory. */
 function hashFile(file, algo = 'sha256') {
   return new Promise((resolve, reject) => {
@@ -264,6 +302,7 @@ async function pool(tasks, limit = 8, { onSettled, signal } = {}) {
 
 module.exports = {
   getJson,
+  getText,
   download,
   pool,
   hashFile,

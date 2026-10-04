@@ -35,6 +35,10 @@ const NOT_A_MODULE = new Set([
   'tools/probe-software.js',
   'tools/probe-memory.js',
   'tools/probe-updates.js',
+  'tools/probe-updates-net.js',
+  'tools/probe-window.js',
+  'tools/probe-shots.js',
+  'tools/probe-runtime.js',
 ]);
 
 function walk(dir, out = []) {

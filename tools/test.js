@@ -23,6 +23,11 @@ const ping = require('../src/main/services/ping');
 const server = require('../src/main/services/server');
 const paper = require('../src/main/services/paper');
 const paths = require('../src/main/services/paths');
+const runtime = require('../src/main/services/runtime');
+const catalog = require('../src/main/services/catalog');
+const bedrock = require('../src/main/services/bedrock');
+const pocketmine = require('../src/main/services/pocketmine');
+const php = require('../src/main/services/php');
 const updater = require('../src/main/services/updater');
 const store = require('../src/main/store');
 
@@ -409,6 +414,287 @@ test('buildArgs repairs a max below the min instead of producing a doomed JVM', 
   const min = Number(/^-Xms(\d+)M$/.exec(args[0])[1]);
   const max = Number(/^-Xmx(\d+)M$/.exec(args[1])[1]);
   assert.ok(max >= min, `-Xmx ${max} below -Xms ${min}`);
+});
+
+/* ================================ runtimes =============================== */
+
+test('launchPlan builds a Java command line unchanged', () => {
+  const plan = server.launchPlan({ type: 'paper', memory: { min: 1024, max: 4096 } }, { exe: 'C:\\jdk\\java.exe' });
+  assert.strictEqual(plan.runtime, 'java');
+  assert.strictEqual(plan.exe, 'C:\\jdk\\java.exe');
+  assert.deepStrictEqual(plan.args.slice(-3), ['-jar', 'paper.jar', 'nogui']);
+  assert.ok(plan.args.includes('-Xmx4096M'));
+});
+
+test('launchPlan runs PocketMine on PHP with a memory_limit, never -Xmx', () => {
+  const plan = server.launchPlan({ type: 'pocketmine', memory: { min: 1024, max: 2048 } }, { exe: 'C:\\php\\php.exe' });
+  assert.strictEqual(plan.runtime, 'php');
+  // passing -Xmx to PHP would be a fatal "unrecognized option" on startup
+  assert.ok(!plan.args.some((a) => a.startsWith('-X')), plan.args.join(' '));
+  assert.ok(plan.args.includes('memory_limit=2048M'), plan.args.join(' '));
+  assert.deepStrictEqual(plan.args.slice(-1), ['PocketMine-MP.phar']);
+  // the minimum has no PHP equivalent, so it is not invented
+  assert.ok(!plan.args.some((a) => a.startsWith('-d') && a.includes('memory_limit=1024')));
+});
+
+test('launchPlan runs Bedrock as a bare exe with no JVM flags and no nogui', () => {
+  const plan = server.launchPlan({ type: 'bedrock', memory: { min: 1024, max: 4096 } }, { exe: 'C:\\srv\\bedrock_server.exe' });
+  assert.strictEqual(plan.runtime, 'none');
+  assert.strictEqual(plan.args.length, 0, `Bedrock takes no arguments, got ${plan.args.join(' ')}`);
+  // `nogui` is a Java habit; Bedrock would ignore it and a reader would copy it
+  assert.ok(!plan.args.includes('nogui'));
+});
+
+test('an unknown software id still gets a launchable plan rather than a crash', () => {
+  // a server record can outlive the app version that created it
+  const plan = server.launchPlan({ type: 'something-nobody-has-heard-of' }, { exe: 'C:\\jdk\\java.exe' });
+  assert.strictEqual(plan.runtime, 'java');
+  assert.ok(plan.args.includes('-jar'));
+});
+
+test('every software id has a runtime row and a catalogue', () => {
+  const ids = runtime.ids();
+  assert.ok(ids.length >= 9, `only ${ids.length} runtimes`);
+  for (const id of ids) {
+    assert.ok(catalog.forSoftware(id), `no catalogue for ${id}`);
+    const rt = runtime.forSoftware(id);
+    assert.ok(rt.entry, `${id} has no entry point`);
+    assert.ok(rt.ready instanceof RegExp, `${id} has no readiness pattern`);
+    assert.strictEqual(typeof rt.eula, 'boolean', `${id} does not say whether it needs the EULA`);
+  }
+});
+
+test('the renderer and main agree on every software id', () => {
+  // the renderer keeps its own table so it can render synchronously; the two
+  // drifting apart is how software ends up creatable but unstartable
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'js', 'software.js'), 'utf8');
+  const ids = [...src.matchAll(/^\s{4}id: '([a-z]+)',$/gm)].map((m) => m[1]);
+  assert.ok(ids.length >= 9, `renderer table only had ${ids.length} entries`);
+  for (const id of ids) {
+    assert.ok(runtime.isKnown(id), `renderer offers "${id}" but main has no runtime for it`);
+    assert.ok(catalog.forSoftware(id), `renderer offers "${id}" but main has no catalogue for it`);
+  }
+  for (const id of runtime.ids()) {
+    assert.ok(ids.includes(id), `main can run "${id}" but the renderer cannot create it`);
+  }
+});
+
+test('the entry point named in the renderer matches the one main runs', () => {
+  // the Versions view says "Remove bedrock_server.exe"; if these drift it removes
+  // the wrong thing or names a file that does not exist
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'js', 'software.js'), 'utf8');
+  const pairs = [...src.matchAll(/id: '([a-z]+)',[\s\S]{0,220}?entry: '([^']+)'/g)];
+  assert.ok(pairs.length >= 9, `only matched ${pairs.length} id/entry pairs`);
+  for (const [, id, entry] of pairs) {
+    assert.strictEqual(runtime.forSoftware(id).entry, entry, `entry mismatch for ${id}`);
+  }
+});
+
+test('only Mojang and Bukkit software are gated on the EULA', () => {
+  // Bedrock's terms are accepted on Mojang's download page and PocketMine has
+  // none of its own, so neither writes an eula.txt - blocking them on a file that
+  // will never exist is a dead end
+  assert.strictEqual(runtime.forSoftware('bedrock').eula, false);
+  assert.strictEqual(runtime.forSoftware('pocketmine').eula, false);
+  for (const id of ['paper', 'vanilla', 'spigot']) {
+    assert.strictEqual(runtime.forSoftware(id).eula, true, `${id} should still need the EULA`);
+  }
+});
+
+test('preflight names the missing thing in the software\'s own words', () => {
+  const bedrock = runtime.preflight({ id: 'x', type: 'bedrock' });
+  assert.strictEqual(bedrock.length, 1);
+  assert.ok(/bedrock_server\.exe/.test(bedrock[0].text), bedrock[0].text);
+  assert.strictEqual(bedrock[0].ok, false);
+
+  const phpChecks = runtime.preflight({ id: 'x', type: 'pocketmine' }, { php: { ok: false, reason: 'no PHP here' } });
+  assert.ok(phpChecks.some((c) => /no PHP here/.test(c.text)), JSON.stringify(phpChecks));
+});
+
+test('Bedrock version lists sort numerically, not as strings', () => {
+  // 1.21.1.10 is older than 1.21.1.9 but sorts later as text
+  const sorted = bedrock.compareVersions('1.21.1.9', '1.21.1.10');
+  assert.ok(sorted < 0, '1.21.1.9 should come before 1.21.1.10');
+  assert.strictEqual(bedrock.compareVersions('1.21.1.0', '1.21.1.0'), 0);
+});
+
+test('the Bedrock version list is read out of the download page markup', () => {
+  const html = `
+    <a href="/bedrockdedicatedserver/bin-win/bedrock-server-1.21.1.0.zip">win</a>
+    <a href="/bedrockdedicatedserver/bin-win/bedrock-server-1.21.1.10.zip">win</a>
+    <a href="/bedrockdedicatedserver/bin-win/bedrock-server-1.21.1.9.zip">win</a>
+    <a href="/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.0.0.zip">linux</a>
+  `;
+  const versions = bedrock.parseVersions(html);
+  assert.deepStrictEqual(versions, ['1.21.1.10', '1.21.1.9', '1.21.1.0', '1.20.0.0']);
+  assert.deepStrictEqual(bedrock.parseVersions('<html>nothing here</html>'), []);
+});
+
+test('Bedrock listens on 19132, not the Java port', () => {
+  assert.strictEqual(bedrock.defaultPort(), 19132);
+  assert.strictEqual(pocketmine.defaultPort(), 19132);
+  assert.strictEqual(catalog.defaultPort('bedrock'), 19132);
+  assert.strictEqual(catalog.defaultPort('paper'), 25565);
+});
+
+test('software with no public download refuses with an explanation', () => {
+  // Spigot and CraftBukkit list real versions EnvServer cannot fetch, and saying
+  // so at the point of the click beats a 404 later
+  return catalog.forSoftware('spigot')
+    .install({ serverId: 'x', mcVersion: '1.21.4' })
+    .then(
+      () => assert.fail('Spigot install should have been refused'),
+      (err) => {
+        assert.ok(/no public download/i.test(err.message), err.message);
+      }
+    );
+});
+
+test('catalogue.canInstall matches the renderer table\'s auto flag', () => {
+  // renderer `auto: false` means "you bring the files"; main must agree or the UI
+  // offers a download that main then refuses
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'js', 'software.js'), 'utf8');
+  const blocks = src.split(/\n  \{\n/).slice(1);
+  for (const block of blocks) {
+    const id = /id: '([a-z]+)'/.exec(block);
+    if (!id) continue;
+    const auto = /auto: (true|false)/.exec(block);
+    if (!auto) continue;
+    assert.strictEqual(catalog.canInstall(id[1]), auto[1] === 'true', `auto mismatch for ${id[1]}`);
+  }
+});
+
+test('PocketMine release payloads keep only the phar', () => {
+  const trimmed = pocketmine.trim([
+    {
+      tag_name: '5.44.3',
+      published_at: '2026-01-02T03:04:05Z',
+      assets: [
+        { name: 'build_info.json', id: 1, size: 10 },
+        { name: 'PocketMine-MP.phar', id: 2, size: 3354057, browser_download_url: 'https://x/PocketMine-MP.phar', digest: 'sha256:abc' },
+      ],
+    },
+    // a release with no phar is not installable and must not become a version
+    { tag_name: '5.44.2', assets: [{ name: 'build_info.json', id: 3, size: 10 }] },
+  ]);
+  assert.strictEqual(trimmed.length, 1);
+  assert.strictEqual(trimmed[0].version, '5.44.3');
+  assert.strictEqual(trimmed[0].size, 3354057);
+  assert.strictEqual(trimmed[0].sha256, 'sha256:abc');
+});
+
+test('PocketMine needs PHP 8.1, and says so when what is installed is too old', () => {
+  assert.deepStrictEqual({ ...php.MIN }, { major: 8, minor: 1 });
+  assert.strictEqual(php.compatible({ major: 8, minor: 1 }), true);
+  assert.strictEqual(php.compatible({ major: 8, minor: 4 }), true);
+  assert.strictEqual(php.compatible({ major: 9, minor: 0 }), true);
+  assert.strictEqual(php.compatible({ major: 8, minor: 0 }), false);
+  assert.strictEqual(php.compatible({ major: 7, minor: 4 }), false);
+  assert.strictEqual(php.compatible(null), false);
+
+  // "you have 7.4 and it will not work" is more useful than "no PHP"
+  const old = php.explainMissing({ version: '7.4.33', major: 7, minor: 4 });
+  assert.ok(/7\.4\.33/.test(old), old);
+  assert.ok(/8\.1 or newer/.test(old), old);
+
+  const none = php.explainMissing(null);
+  assert.ok(/no PHP on this machine/i.test(none), none);
+  // and it has to explain why EnvServer will not fix it itself
+  assert.ok(/does not install PHP|not be downloaded|redistributable/i.test(none), none);
+});
+
+test('php.probe reads the version from the interpreter, not from a folder name', () => {
+  // no PHP on the test machine, so this asserts the failure is a clean null
+  return php.probe(path.join(os.tmpdir(), 'definitely-not-php.exe')).then((res) => {
+    assert.strictEqual(res, null);
+  });
+});
+
+test('php.candidates offers the explicit path first and dedupes', () => {
+  const list = [...php.candidates('C:\\nope\\php.exe')];
+  assert.strictEqual(list[0], path.resolve('C:\\nope\\php.exe'));
+  assert.strictEqual(new Set(list).size, list.length, 'the same php.exe was offered twice');
+});
+
+test('the Bedrock ping is a well-formed RakNet unconnected ping', () => {
+  const buf = ping.packetBedrockPing();
+  assert.strictEqual(buf.length, 33, 'RakNet unconnected ping is 33 bytes');
+  assert.strictEqual(buf[0], 0x01, 'packet id');
+  // the offline message identifier, byte for byte - get this wrong and the
+  // server silently ignores the ping, which looks exactly like "unreachable"
+  assert.deepStrictEqual([...buf.subarray(9, 25)], [...ping.RAKNET_MAGIC]);
+  assert.strictEqual(ping.RAKNET_MAGIC.length, 16);
+  // the timestamp must advance, or some servers treat repeats as replays
+  const later = ping.packetBedrockPing();
+  assert.ok(later.readBigUInt64BE(1) >= buf.readBigUInt64BE(1));
+});
+
+test('statusFor picks the protocol the software actually speaks', async () => {
+  // both fail fast against a closed port, but the failure must be clean rather
+  // than a hang: a status sample that never settles stalls the whole monitor
+  const java = await ping.statusFor('java', '127.0.0.1', 1, { timeout: 300 });
+  assert.strictEqual(java.ok, false);
+  const bedrock = await ping.statusFor('none', '127.0.0.1', 1, { timeout: 300 });
+  assert.strictEqual(bedrock.ok, false);
+  const php = await ping.statusFor('php', '127.0.0.1', 1, { timeout: 300 });
+  assert.strictEqual(php.ok, false);
+});
+
+test('a Bedrock MOTD that is not JSON is still readable', () => {
+  assert.strictEqual(ping.flattenMotd('plain text'), 'plain text');
+  assert.strictEqual(ping.flattenMotd({ text: 'a', extra: [{ text: 'b' }] }), 'ab');
+});
+
+test('a server that has never started reports a missing properties file, not an empty one', () => {
+  // these are different states and the Config view says different things about
+  // each: "there is no file yet" versus "there is a file with nothing set in it"
+  const missing = config.readProperties(path.join(os.tmpdir(), 'envserver-no-such-properties-file'));
+  assert.strictEqual(missing.missing, true);
+  assert.deepStrictEqual(missing.values, {});
+
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'envserver-props-')), 'server.properties');
+  fs.writeFileSync(file, 'motd=hello\nmax-players=8\n', 'utf8');
+  const present = config.readProperties(file);
+  assert.strictEqual(present.missing, false);
+  assert.strictEqual(present.values.motd, 'hello');
+  assert.strictEqual(present.values['max-players'], '8');
+});
+
+test('Bedrock software is told why, rather than sent to Minecraft\'s EULA', () => {
+  // its own data dir, so it does not depend on whichever test happens to have
+  // called store.init() before it - and so it leaves no server behind
+  const dir = tmp('store-bedrock');
+  store.init(dir);
+  store.write({ serversDir: dir, port: 25565 });
+  paths.init(path.join(dir, 'data'));
+  paths.setServersRoot(path.join(dir, 'servers'));
+
+  const s = store.createServer({ name: 'NoJavaProps', mcVersion: '1.21.1.0', type: 'bedrock' });
+  try {
+    const res = config.seedDefaults(s.id, { port: 19132, software: 'bedrock' });
+    assert.strictEqual(res.seeded, false, 'Bedrock must not get a Java server.properties');
+    assert.strictEqual(res.skipped, 'non-java');
+    assert.strictEqual(config.readProperties(paths.serverProperties(s.id)).missing, true);
+
+    const php = config.seedDefaults(s.id, { port: 19132, software: 'pocketmine' });
+    assert.strictEqual(php.seeded, false, 'PocketMine writes its own properties too');
+
+    // and the EULA gate agrees: main answers "nothing to accept", not "accepted"
+    assert.strictEqual(runtime.forSoftware('bedrock').eula, false);
+    assert.strictEqual(runtime.forSoftware('pocketmine').eula, false);
+  } finally {
+    store.removeServer(s.id);
+  }
+});
+
+test('php.listRuntimes reports nothing rather than throwing on a machine without PHP', async () => {
+  const found = await php.listRuntimes({ phpPath: '' });
+  assert.ok(Array.isArray(found));
+  // every entry is a real, probed interpreter
+  for (const r of found) {
+    assert.ok(/\.exe$/i.test(r.exe), r.exe);
+    assert.strictEqual(typeof r.ok, 'boolean');
+  }
 });
 
 /* ================================ paper ================================== */

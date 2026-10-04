@@ -4,7 +4,15 @@ import { bytes, megabytesToText, duration, relative, dateTime, plural } from '..
 import { state, activeServer, setView, refreshDetail, refreshServers, refreshVersions, emit } from '../state.js';
 import { startServer, stopServer, acceptEula, installVersion, backupNow, suggestMemory, memoryReading, memoryBudget } from '../actions.js';
 import { installSoftware, activeJobs } from '../jobs.js';
-import { SOFTWARE, softwareById, softwareLabel, softwareSupports } from '../software.js';
+import {
+  SOFTWARE,
+  softwareById,
+  softwareLabel,
+  softwareSupports,
+  softwareRuntime,
+  runtimeEntry,
+  runtimeNoun,
+} from '../software.js';
 import { toast } from '../ui/toast.js';
 
 /** A status pill. */
@@ -65,6 +73,12 @@ function createServerCardImpl() {
 
   const softwareNote = h('div.field__hint', { text: sw.note });
 
+  // Grouped by edition, because "which edition" is the question people actually
+  // have. A flat list of nine mixes PaperMC with PocketMine-MP and leaves the
+  // reader to work out that one of them is not for Java players at all.
+  const javaSoftware = SOFTWARE.filter((s) => s.runtime === 'java');
+  const bedrockSoftware = SOFTWARE.filter((s) => s.runtime !== 'java');
+
   const typeSelect = h(
     'select.select',
     {
@@ -73,8 +87,26 @@ function createServerCardImpl() {
         refreshVersions(false);
       },
     },
-    ...SOFTWARE.map((s) => h('option', { value: s.id, text: s.label, selected: s.id === sw.id }))
+    h('optgroup', { label: 'Java Edition' }, ...javaSoftware.map((s) => h('option', { value: s.id, text: s.label, selected: s.id === sw.id }))),
+    h('optgroup', { label: 'Bedrock Edition' }, ...bedrockSoftware.map((s) => h('option', { value: s.id, text: s.label, selected: s.id === sw.id })))
   );
+
+  /**
+   * The runtime line, said before the server exists rather than after.
+   *
+   * "Needs Java 21" for a Paper server and "needs PHP 8.1" for PocketMine are
+   * very different promises, and somebody creating a PocketMine server on a
+   * machine with no PHP should find out from this form rather than from a failed
+   * start.
+   */
+  const runtimeHint =
+    sw.runtime === 'none'
+      ? h('div.field__hint', { text: `Runs ${runtimeEntry(sw.id)} directly - a native Windows program, so no Java is needed at all. Listens on port 19132.` })
+      : sw.runtime === 'php'
+        ? state.runtime.php?.length
+          ? h('div.field__hint', { text: `Needs PHP. EnvServer found PHP ${state.runtime.php[0].version} on this machine.` })
+          : h('div.field__hint', { text: `Needs PHP ${state.runtime.phpMin || '8.1'} or newer. This machine has none - you can create the server, but set a PHP path in Settings before starting it. Listens on port 19132.` })
+        : h('div.field__hint', { text: `Runs on Java. EnvServer picks the right version and downloads it if it is missing. Listens on port 25565.` });
 
   const submitText = sw.auto ? `Create and install ${sw.label.replace(/\s*\(.*\)$/, '')}` : 'Create server folder';
 
@@ -102,6 +134,12 @@ function createServerCardImpl() {
       return;
     }
 
+    // Bedrock's port is not 25565 and getting it wrong produces a server that
+    // starts perfectly and that nobody can join, so it is said at creation time
+    if (sw.port !== 25565) {
+      toast(`${name} created on port ${sw.port} - Bedrock clients connect to UDP ${sw.port}, not 25565.`, 'info');
+    }
+
     toast(`${name} created - downloading ${sw.label} ${mcVersion}`, 'ok');
     // the install is a background job: no modal, and the user can go look at
     // something else while the 50 MB downloads
@@ -109,7 +147,10 @@ function createServerCardImpl() {
   };
 
   return h(
-    'div.panel',
+    // named so the README screenshot can crop to this panel instead of showing
+    // the whole window: a picture of a full application is not documentation of
+    // the form in it
+    'div.panel.createcard',
     h(
       'div.panel__head',
       h('div.panel__title', icon('plus'), 'Create a server'),
@@ -137,7 +178,7 @@ function createServerCardImpl() {
       h(
         'div.grid.grid--2',
         h('div.field', h('div.field__label', { text: 'Name' }), nameInput),
-        h('div.field', h('div.field__label', { text: 'Server software' }), typeSelect, softwareNote),
+        h('div.field', h('div.field__label', { text: 'Server software' }), typeSelect, softwareNote, runtimeHint),
         h('div.field', h('div.field__label', { text: 'Minecraft version' }), versionSelect,
           h('div.field__hint', { text: versions.length ? `${versions.length} versions available for ${sw.label}` : 'No version list loaded yet.' })),
         h(
@@ -171,14 +212,32 @@ function hero(record, detail, status) {
   const running = Boolean(status?.running);
   const ready = running && status.phase === 'running';
   const starting = running && !ready;
-  const hasJar = detail.jar.installed;
+  const hasJar = detail.files?.installed ?? detail.jar?.installed;
   const eulaOk = detail.eula;
+  const sw = softwareById(detail.server.type);
+  const rt = sw.runtime;
+
+  // one runtime badge, whatever the runtime is. A Bedrock server showing
+  // "Java 21 / exact java" would be claiming work that does not exist, and one
+  // showing "no java" in red would read as a problem it does not have.
+  const runtimeBadges =
+    rt === 'none'
+      ? [iconBadge('zap', 'no JVM needed', 'ok')]
+      : rt === 'php'
+        ? [
+            detail.php?.resolved?.ok
+              ? iconBadge('check', `PHP ${detail.php.resolved.version}`, 'ok')
+              : iconBadge('alert', `needs PHP ${detail.php?.min || '8.1'}`, 'err'),
+          ]
+        : [
+            detail.java.requiredMajor ? javaBadge(detail.java.resolved?.match) : null,
+            detail.java.requiredMajor ? badge(`Java ${detail.java.resolved?.major || detail.java.requiredMajor}`) : null,
+          ];
 
   const badges = [
-    detail.server.mcVersion ? iconBadge('cube', `${softwareLabel(detail.server.type)} ${detail.server.mcVersion}`, 'info') : badge('no version yet', 'warn'),
+    detail.server.mcVersion ? iconBadge('cube', `${sw.label} ${detail.server.mcVersion}`, 'info') : badge('no version yet', 'warn'),
     detail.server.build ? badge(`build ${detail.server.build}`) : null,
-    detail.java.requiredMajor ? javaBadge(detail.java.resolved?.match) : null,
-    detail.java.requiredMajor ? badge(`Java ${detail.java.resolved?.major || detail.java.requiredMajor}`) : null,
+    ...runtimeBadges,
     iconBadge('hardDrive', `port ${detail.port}`),
     detail.onlineMode ? iconBadge('shield', 'online mode') : iconBadge('alert', 'offline mode', 'warn'),
     eulaOk ? null : iconBadge('alert', 'EULA pending', 'err'),
@@ -209,14 +268,18 @@ function hero(record, detail, status) {
       );
     }
   } else {
-    const blocked = !hasJar || !eulaOk;
+    // `blockers` is the same list main's start() refuses on, so the button is
+    // disabled for exactly the reasons the start would fail - and the title says
+    // which one, rather than a generic "not ready".
+    const blockers = detail.blockers || [];
+    const blocked = blockers.length > 0;
     actions.push(
       h(
         `button.btn.btn--lg.btn--primary.runbtn`,
         {
           type: 'button',
           disabled: blocked,
-          title: !hasJar ? `Install a ${softwareLabel(record.type)} jar first` : !eulaOk ? 'Accept the EULA first' : '',
+          title: blockers.length ? blockers.map((b) => b.text).join(' ') : '',
           onClick: () => startServer(record.id),
         },
         icon('play'),
@@ -224,7 +287,13 @@ function hero(record, detail, status) {
       )
     );
     if (!eulaOk) actions.push(h('button.btn.btn--light', { type: 'button', onClick: () => acceptEula(record.id) }, icon('shield'), 'Accept the EULA'));
-    if (!hasJar) actions.push(h('button.btn.btn--light', { type: 'button', onClick: () => setView('versions') }, icon('download'), `Install ${softwareLabel(record.type)}`));
+    if (!hasJar) actions.push(h('button.btn.btn--light', { type: 'button', onClick: () => setView('versions') }, icon('download'), `Install ${sw.label}`));
+    // a runtime blocker is not fixed in the Versions view, so it says where it is
+    for (const b of blockers) {
+      if (b.text.startsWith('PocketMine-MP') || /PHP/.test(b.text)) {
+        actions.push(h('button.btn.btn--light', { type: 'button', onClick: () => setView('settings') }, icon('alert'), 'Fix PHP in Settings'));
+      }
+    }
   }
 
   return h(
@@ -251,6 +320,42 @@ function hero(record, detail, status) {
 
 function quickCard(record, detail, status) {
   const java = detail.java;
+  const sw = softwareById(record.type);
+  const runtime = softwareRuntime(record.type);
+
+  /**
+   * What actually runs this server, in one row.
+   *
+   * Three shapes because there are three answers: a resolved Java with its path,
+   * a resolved PHP with its path, or no runtime at all - and the last one is a
+   * fact about Bedrock rather than a gap to apologise for.
+   */
+  const runtimeRow =
+    runtime === 'none'
+      ? h(
+          'div',
+          h('div.kv', h('span.kv__k', { text: 'Runtime' }), iconBadge('zap', 'none - native binary', 'ok')),
+          h('div.field__hint', { text: `${runtimeEntry(record.type)} is a native Windows program, so there is no JVM to choose or download.` })
+        )
+      : runtime === 'php'
+        ? h(
+            'div',
+            h(
+              'div.kv',
+              h('span.kv__k', { text: 'PHP runtime' }),
+              detail.php?.resolved?.ok ? iconBadge('check', `PHP ${detail.php.resolved.version}`, 'ok') : iconBadge('alert', `needs PHP ${detail.php?.min || '8.1'}`, 'err')
+            ),
+            detail.php?.resolved?.ok
+              ? h('div', { style: { fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--grey-5)', wordBreak: 'break-all', marginTop: '3px' }, text: detail.php.resolved.exe })
+              : h('div.field__hint', { text: detail.php?.explain || 'PocketMine-MP needs PHP 8.1 or newer. Set it in Settings.' })
+          )
+        : h(
+            'div',
+            h('div.kv', h('span.kv__k', { text: 'Java runtime' }), java.resolved ? javaBadge(java.resolved.match) : iconBadge('download', 'will be downloaded', 'warn')),
+            java.resolved
+              ? h('div', { style: { fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--grey-5)', wordBreak: 'break-all', marginTop: '3px' }, text: java.resolved.javaExe })
+              : h('div.field__hint', { text: java.explain || `This release needs Java ${java.requiredMajor}.` })
+          );
 
   return h(
     'div.panel',
@@ -259,13 +364,7 @@ function quickCard(record, detail, status) {
       'div.quick__body',
       h('div', h('div.stat__label', { text: 'MOTD shown to players' }), h('div.motd', { text: detail.properties.values.motd || '(empty)' })),
 
-      h(
-        'div',
-        h('div.kv', h('span.kv__k', { text: 'Java runtime' }), java.resolved ? javaBadge(java.resolved.match) : iconBadge('download', 'will be downloaded', 'warn')),
-        java.resolved
-          ? h('div', { style: { fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--grey-5)', wordBreak: 'break-all', marginTop: '3px' }, text: java.resolved.javaExe })
-          : h('div.field__hint', { text: java.explain || `This release needs Java ${java.requiredMajor}.` })
-      ),
+      runtimeRow,
 
       h(
         'div',
@@ -365,14 +464,40 @@ function backupsPanel(detail) {
 /* ------------------------------ not ready ------------------------------- */
 
 function notReady(detail) {
-  const items = [];
-  if (!detail.jar.installed) items.push('No Paper jar is installed yet.');
-  if (!detail.eula) items.push('The Minecraft EULA has not been accepted.');
-  if (detail.java.requiredMajor && !detail.java.resolved) {
-    // this is not a blocker: the runtime is downloaded automatically on start
+  const sw = softwareById(detail.server.type);
+  const rt = softwareRuntime(detail.server.type);
+
+  // main already computed the list of things that will stop a start, and why.
+  // Rendering that directly is what keeps this banner honest: a Bedrock server
+  // used to be told "No Paper jar is installed yet" and "Java 21 is not
+  // installed" on a machine with no Java at all, neither of which was true of it.
+  const items = (detail.blockers || []).map((b) => b.text);
+
+  // one informational line the blockers do not carry, because it is not a
+  // blocker: the JDK download happens automatically on start
+  if (rt === 'java' && detail.java.requiredMajor && !detail.java.resolved) {
     items.push(`Java ${detail.java.requiredMajor} is not installed - EnvServer will download it when you start the server.`);
   }
+
+  // PocketMine's runtime is a hard blocker, unlike Java, because there is nothing
+  // for EnvServer to download - so the message has to say where to get it
+  if (rt === 'php' && detail.php && !detail.php.resolved) {
+    items.push(
+      `PocketMine-MP needs PHP ${detail.php.min} or newer. EnvServer does not install PHP for you - the Windows builds are not redistributable under one licence.`
+    );
+  }
+
   if (!items.length) return null;
+
+  return h(
+    'div.banner.banner--warn',
+    icon('info'),
+    h(
+      'div',
+      h('b', { text: `Before this ${sw.label} server can start` }),
+      h('ul', ...items.map((t) => h('li', { text: t })))
+    )
+  );
 
   return h('div.banner.banner--warn', icon('info'), h('div', h('b', { text: 'Before this server can start' }), h('ul', ...items.map((t) => h('li', { text: t })))));
 }
@@ -391,8 +516,8 @@ export function renderDashboard(host) {
         h('div.section__head', h('div.section__title', icon('layers'), 'What EnvServer does'), h('div.section__line')),
         h(
           'div.grid.grid--2',
-          feature('download', 'Installs Paper', 'Every build papermc.io publishes, per Minecraft version.'),
-          feature('cpu', 'Sorts out Java', 'Finds the right runtime, or downloads Eclipse Temurin.'),
+          feature('download', 'Installs the software', 'Paper, Folia, Purpur, Vanilla, PocketMine-MP and Mojang\'s Bedrock server.'),
+          feature('cpu', 'Sorts out the runtime', 'Java for the Java servers, PHP for PocketMine, nothing at all for Bedrock.'),
           feature('terminal', 'Live console', 'Real output plus a command box while it runs.'),
           feature('shield', 'Backups', 'Zip the world on demand or on a timer.')
         )

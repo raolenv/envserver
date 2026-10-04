@@ -9,6 +9,8 @@ const { EventEmitter } = require('events');
 
 const paths = require('./paths');
 const java = require('./java');
+const php = require('./php');
+const runtime = require('./runtime');
 const ping = require('./ping');
 const config = require('./config');
 const zip = require('./zip');
@@ -90,6 +92,16 @@ const JOIN_RE = /(?:<)?([A-Za-z0-9_]{3,16})(?:>)?\s+(joined|left) the game/i;
 const LOGIN_RE = /([A-Za-z0-9_]{3,16})\s+\(\/[\d.]+:\d+\)\s+logged in with entity id/i;
 const LOST_RE = /([A-Za-z0-9_]{3,16})\s+\(\/[\d.]+\:\d+\)\s+lost connection/i;
 const UUID_RE = /UUID of player ([A-Za-z0-9_]{3,16}) is ([0-9a-f-]{36})/i;
+
+/**
+ * The line that means "the server is up and the port is open".
+ *
+ * Per software, because Bedrock does not say this. Paper and vanilla print
+ * `Done (12.345s)! For help, type "help"`, PocketMine-MP deliberately prints the
+ * same line so that scripts people already have keep working, and Mojang's
+ * Bedrock server announces itself differently. `runtime.js` owns the choice; this
+ * fallback is the Java one so a software id from an old record still behaves.
+ */
 const READY_RE = /Done \([^)]*\)! For help, type "help"/;
 
 /* ----------------------------- command line ----------------------------- */
@@ -133,6 +145,77 @@ function clampMemory(value, fallback) {
   // the JVM cannot start below about 128 MB, and above ~32 GB it loses its
   // compressed object pointers, so both ends are real limits
   return Math.max(128, Math.min(32 * 1024, n));
+}
+
+/* ------------------------------ launch plan ------------------------------ */
+
+/**
+ * The command line for a server, for every runtime EnvServer supports.
+ *
+ * This is the piece that used to be `java -Xms… -Xmx… -jar paper.jar nogui`
+ * written inline in `start()`. It is a function now because "how do I run this"
+ * is a question with three answers and none of them is "ask a human":
+ *
+ *   java  java -Xms512M -Xmx2048M -Dfile.encoding=UTF-8 … -jar paper.jar nogui
+ *   php   php -d memory_limit=2048M PocketMine-MP.phar
+ *   none  bedrock_server.exe
+ *
+ * The memory fields mean something slightly different in each case, and saying so
+ * rather than quietly passing `-Xmx` to something that is not a JVM is the whole
+ * point:
+ *
+ *   java  `-Xmx` is the heap ceiling. The process will still exceed it.
+ *   php   PHP has no separate heap; `memory_limit` is the *total* the process may
+ *         allocate, so it maps to the ceiling more directly than -Xmx does. The
+ *         minimum has no equivalent, so only the ceiling is passed.
+ *   none  there is no runtime to configure. Bedrock reads its own settings from
+ *         server.properties, so the memory fields are informational only - and
+ *         `start()` says so rather than pretending to apply them.
+ *
+ * @param {object} server the stored record
+ * @param {object} o
+ * @param {string} o.exe     the runtime executable, already resolved
+ * @param {object} [o.memory] { min, max }
+ * @param {string[]} [o.recommended] Paper's recommended JVM flags
+ * @param {string} [o.extra]  the user's own arguments, verbatim
+ * @param {boolean} [o.nogui] Java only
+ * @returns {{exe:string, args:string[], runtime:string}}
+ */
+function launchPlan(server, o = {}) {
+  const rt = runtime.forSoftware(server?.type);
+  const entry = path.basename(rt.entry);
+  const memory = {
+    min: clampMemory(o.memory?.min ?? server?.memory?.min ?? 1024, 1024),
+    max: Math.max(clampMemory(o.memory?.max ?? server?.memory?.max ?? 4096, 4096), 1),
+  };
+  if (memory.max < memory.min) memory.max = memory.min;
+
+  const extra = String(o.extra ?? server?.extraArgs ?? '')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (rt.kind === 'php') {
+    // `-d memory_limit` is PHP's own ceiling and is the only one that exists
+    return { exe: o.exe, args: ['-d', `memory_limit=${memory.max}M`, entry, ...extra], runtime: rt.kind, memory };
+  }
+
+  if (rt.kind === 'none') {
+    // Bedrock takes no arguments. Passing `nogui` - the Java habit - would be
+    // silently ignored by it, and worse, would be copied by anyone reading this
+    // code as if it did something.
+    return { exe: o.exe, args: [...extra], runtime: rt.kind, memory };
+  }
+
+  // java
+  const args = buildArgs({
+    memory,
+    recommended: o.recommended,
+    extra: extra.join(' '),
+    nogui: o.nogui,
+    jar: entry,
+  });
+
+  return { exe: o.exe, args, runtime: rt.kind, memory };
 }
 
 /** Total RAM on the machine, so the UI can suggest a sane ceiling. */
@@ -240,9 +323,14 @@ const HEAP_TTL_MS = 15_000;
 /**
  * Start a server.
  *
- * @param {object} server the stored record: id, name, mcVersion, memory, javaPath...
+ * Which runtime is involved is decided by `runtime.js`, not here. Everything this
+ * function does that used to be unconditional - check for a jar, match a Java
+ * major, refuse without an accepted eula.txt - is now conditional on it, and a
+ * Bedrock or PocketMine server reaches the same spawn with none of that.
+ *
+ * @param {object} server the stored record: id, name, type, mcVersion, memory...
  * @param {object} o
- * @param {number} o.requiredMajor Java feature version this release needs
+ * @param {number} [o.requiredMajor] Java feature version this release needs
  * @param {string[]} [o.recommended] Paper's recommended JVM flags
  * @param {object} [o.settings] global settings (extra args, memory overrides)
  */
@@ -250,45 +338,76 @@ async function start(server, o = {}) {
   const id = paths.segment(server.id);
   if (running.has(id)) throw new Error('this server is already running');
 
+  const rt = runtime.forSoftware(server.type);
   const dir = paths.serverDir(id);
-  if (!paths.exists(paths.serverJar(id))) {
-    throw new Error('this server has no Paper jar yet - install a version first');
+
+  // --- is there anything to run? -------------------------------------------
+  const files = runtime.installState(id, server.type);
+  if (!files.installed) {
+    throw new Error(
+      rt.kind === 'java'
+        ? 'this server has no server jar yet - install a version first'
+        : `this server has no ${rt.missing} yet - install a version first`
+    );
   }
 
-  // A world folder can only be owned by one JVM at a time. If a previous
-  // EnvServer quit uncleanly, or a user starts the same server twice, the
-  // second JVM crashes with a crystal-clear `world locked` error and the UI
-  // looks broken. Detect the orphaned owner up front and refuse the start
-  // with an actionable message instead of a Java stack trace.
+  // A world folder can only be owned by one process at a time. If a previous
+  // EnvServer quit uncleanly, or a user starts the same server twice, the second
+  // process crashes with a crystal-clear `world locked` error and the UI looks
+  // broken. Detect the orphaned owner up front and refuse the start with an
+  // actionable message instead of a Java stack trace.
   const pidsFile = path.join(paths.tmpDir(), `${id}.pid.json`);
   try {
     const info = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
     const pid = Number(info?.pid);
     if (pid > 0 && process.kill(pid, 0)) {
       throw new Error(
-        `this server's world folder is already owned by another java process (PID ${pid}). Stop that process before starting this one.`
+        `this server's world folder is already owned by another ${rt.kind === 'java' ? 'java' : 'server'} process (PID ${pid}). Stop that process before starting this one.`
       );
     }
   } catch (err) {
     if (err instanceof Error && /already owned/.test(err.message)) throw err;
     // file missing or unreadable: there is no live owner, safe to proceed
   }
-  if (!config.readEula(paths.serverEula(id))) {
-    throw new Error('the Minecraft EULA has not been accepted for this server yet');
-  }
 
-  const resolution = await java.resolveFor({
-    requiredMajor: o.requiredMajor || java.requirementFor(server.mcVersion),
-    pinned: server.javaPath || '',
-    javaPath: o.javaPath || '',
-  });
-  if (!resolution) {
-    throw new Error(
-      java.explainMissing(o.requiredMajor || java.requirementFor(server.mcVersion), server.mcVersion)
-    );
-  }
-  if (resolution.match === 'older') {
-    throw new Error(java.explainMismatch(resolution.major, o.requiredMajor || 0, server.mcVersion));
+  // --- the Mojang EULA gate, for the software that has one ------------------
+  // Bedrock's terms are accepted on Mojang's download page and PocketMine has
+  // none of its own, so neither writes an eula.txt and neither is blocked here.
+  const eulaOk = rt.eula ? config.readEula(paths.serverEula(id)) : true;
+  if (!eulaOk) throw new Error('the Minecraft EULA has not been accepted for this server yet');
+
+  // --- resolve the runtime -------------------------------------------------
+  let exe = '';
+  let javaExe = '';
+  let javaInfo = null;
+  let phpInfo = null;
+  const requiredMajor = rt.kind === 'java' ? o.requiredMajor || java.requirementFor(server.mcVersion) : 0;
+
+  if (rt.kind === 'java') {
+    const resolution = await java.resolveFor({
+      requiredMajor,
+      pinned: server.javaPath || '',
+      javaPath: o.javaPath || '',
+    });
+    if (!resolution) throw new Error(java.explainMissing(requiredMajor, server.mcVersion));
+    if (resolution.match === 'older') throw new Error(java.explainMismatch(resolution.major, requiredMajor, server.mcVersion));
+    exe = resolution.javaExe;
+    javaExe = resolution.javaExe;
+    javaInfo = {
+      major: resolution.major,
+      match: resolution.match,
+      risk: Boolean(resolution.risk),
+      source: resolution.source,
+    };
+  } else if (rt.kind === 'php') {
+    const found = await php.resolveFor({ pinned: o.phpPath || server.phpPath || '' });
+    if (!found) throw new Error(php.explainMissing(null));
+    if (!found.ok) throw new Error(php.explainMissing(found));
+    exe = found.exe;
+    phpInfo = { version: found.version, major: found.major, minor: found.minor, exe: found.exe };
+  } else {
+    exe = runtime.entryPath(id, server.type);
+    if (!paths.exists(exe)) throw new Error(`${rt.missing} is missing from this server's folder`);
   }
 
   const memory = {
@@ -297,7 +416,8 @@ async function start(server, o = {}) {
   };
   if (memory.max < memory.min) memory.max = memory.min;
 
-  const args = buildArgs({
+  const plan = launchPlan(server, {
+    exe,
     memory,
     recommended: o.useRecommendedFlags === false ? [] : o.recommended || [],
     extra: o.extraArgs ?? server.extraArgs ?? '',
@@ -307,9 +427,9 @@ async function start(server, o = {}) {
   await fsp.mkdir(dir, { recursive: true });
 
   // record the owner so a second launch cannot start the same world
-  await fsp.writeFile(pidsFile, JSON.stringify({ pid: 0, javaExe: resolution.javaExe, ts: Date.now() }));
+  await fsp.writeFile(pidsFile, JSON.stringify({ pid: 0, exe, ts: Date.now() }));
 
-  const child = spawn(resolution.javaExe, args, {
+  const child = spawn(plan.exe, plan.args, {
     cwd: dir,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -319,21 +439,23 @@ async function start(server, o = {}) {
   const state = {
     serverId: id,
     name: server.name,
+    type: server.type,
     child,
     pid: child.pid,
-    javaExe: resolution.javaExe,
-    javaMajor: resolution.major,
-    javaMatch: resolution.match,
-    javaRisk: Boolean(resolution.risk),
-    javaSource: resolution.source,
-    argv: [resolution.javaExe, ...args],
+    // `ready` is per software; Bedrock does not print Paper's line
+    ready: rt.ready || READY_RE,
+    runtimeKind: rt.kind,
+    javaExe,
+    exe: plan.exe,
+    php: phpInfo,
+    argv: [plan.exe, ...plan.args],
     memory,
     startedAt: Date.now(),
     readyAt: 0,
     phase: 'starting',
     players: new Map(),
     pendingUuids: new Map(),
-    port: Number(server.port) || 25565,
+    port: Number(server.port) || (rt.kind === 'java' ? 25565 : 19132),
     stopRequested: false,
     exitCode: null,
     stopTimer: null,
@@ -341,26 +463,24 @@ async function start(server, o = {}) {
     backupTimer: null,
   };
   running.set(id, state);
-  await fsp.writeFile(pidsFile, JSON.stringify({ pid: child.pid, javaExe: resolution.javaExe, ts: Date.now() }));
+  await fsp.writeFile(pidsFile, JSON.stringify({ pid: child.pid, exe: plan.exe, ts: Date.now() }));
 
-  emitLog(id, `Starting with Java ${resolution.major} (${resolution.match === 'exact' ? 'exact match' : 'newer than required'})`, 'info');
-  emitLog(id, `Memory: ${memory.min} MB - ${memory.max} MB (-Xms/-Xmx)`, 'info');
-
-  // The two things people get wrong, said once at the only moment they are
-  // actually about to matter: the ceiling is not what Task Manager will show,
-  // and a ceiling larger than the machine does not fail - it crawls.
-  const installedMb = totalMemoryMb();
-  const headroomMb = installedMb - memory.max;
-  if (installedMb && headroomMb < 2048) {
+  // --- say what was actually chosen, once, at the moment it matters ---------
+  if (rt.kind === 'java') {
+    emitLog(id, `Starting with Java ${javaInfo.major} (${javaInfo.match === 'exact' ? 'exact match' : 'newer than required'})`, 'info');
+    emitLog(id, `Memory: ${memory.min} MB - ${memory.max} MB (-Xms/-Xmx)`, 'info');
+    warnAboutHeapCeiling(id, memory);
+  } else if (rt.kind === 'php') {
+    emitLog(id, `Starting with PHP ${phpInfo.version} (${phpInfo.exe})`, 'info');
+    emitLog(id, `Memory: PHP memory_limit is ${memory.max} MB. PHP has one limit, not a separate heap, so this is the most the process can allocate in total.`, 'info');
+  } else {
+    emitLog(id, `Starting ${path.basename(plan.exe)} - no JVM involved`, 'info');
     emitLog(
       id,
-      headroomMb < 0
-        ? `Warning: this machine has ${installedMb} MB of RAM, less than the ${memory.max} MB heap you asked for. Expect it to be slow or killed.`
-        : `Warning: ${memory.max} MB leaves ${headroomMb} MB for Windows on a ${installedMb} MB machine. About 2 GB is needed to stay responsive.`,
-      'warn'
+      'This software configures itself in server.properties, so the memory fields in EnvServer are shown for reference and are not passed to it.',
+      'info'
     );
   }
-  emitLog(id, 'Note: -Xmx is the heap only. Task Manager will show more - metaspace, thread stacks and off-heap buffers are extra.', 'info');
 
   emitStatus(state);
 
@@ -372,6 +492,30 @@ async function start(server, o = {}) {
   await config.pruneLogs(id, o.logsToKeep || 5);
 
   return publicStatus(state);
+}
+
+/**
+ * Warn when the heap ceiling cannot be honoured by this machine.
+ *
+ * Only meaningful for Java. `-Xmx` is a request, not a reservation: asking for
+ * more than the machine has does not fail, it crawls, and the pagefile thrashing
+ * looks like the server's fault.
+ */
+function warnAboutHeapCeiling(id, memory) {
+  const installedMb = totalMemoryMb();
+  const headroomMb = installedMb - memory.max;
+
+  if (installedMb && headroomMb < 2048) {
+    emitLog(
+      id,
+      headroomMb < 0
+        ? `Warning: this machine has ${installedMb} MB of RAM, less than the ${memory.max} MB heap you asked for. Expect it to be slow or killed.`
+        : `Warning: ${memory.max} MB leaves ${headroomMb} MB for Windows on a ${installedMb} MB machine. About 2 GB is needed to stay responsive.`,
+      'warn'
+    );
+  }
+
+  emitLog(id, 'Note: -Xmx is the heap only. Task Manager will show more - metaspace, thread stacks and off-heap buffers are extra.', 'info');
 }
 
 function attachConsole(state) {
@@ -399,7 +543,10 @@ function attachConsole(state) {
   state.child.stdout.on('data', handle);
   state.child.stderr.on('data', handle);
   state.child.on('error', (err) => {
-    emitLog(serverId, `Could not start java: ${err.message}`, 'err');
+    // deliberately not "could not start java": for a Bedrock or PocketMine
+    // server there is no java in the story, and a message naming the wrong
+    // runtime sends people looking in the wrong place
+    emitLog(serverId, `Could not start the server process: ${err.message}`, 'err');
   });
 
   return serverId;
@@ -409,7 +556,7 @@ function handleLine(state, line) {
   const { serverId } = state;
   emitLog(serverId, line, classify(line));
 
-  if (READY_RE.test(line) && state.phase === 'starting') {
+  if (state.ready.test(line) && state.phase === 'starting') {
     state.phase = 'running';
     state.readyAt = Date.now();
     emitLog(serverId, 'Server is ready and accepting connections', 'ok');
@@ -592,15 +739,18 @@ async function sampleOnce(state) {
 
   // the heap is sampled far less often than the player list: it is the honest
   // answer to "how much of my 512 MB is in use", and it only changes on a GC,
-  // while jcmd costs a safepoint each time it is asked
+  // while jcmd costs a safepoint each time it is asked. Only a JVM has one to ask.
   let heap = state.heap || null;
-  if (Date.now() - (state.heapAt || 0) > HEAP_TTL_MS) {
+  if (state.javaExe && Date.now() - (state.heapAt || 0) > HEAP_TTL_MS) {
     heap = await heapInfo(state.child.pid, state.javaExe).catch(() => null);
     state.heap = heap;
     state.heapAt = Date.now();
   }
 
-  const status = await ping.status('127.0.0.1', state.port);
+  // the protocol follows the software, not the port: Bedrock runs RakNet over
+  // UDP and never answers the Java status ping, so asking it the Java way would
+  // leave every Bedrock server permanently unreachable with a player count of 0
+  const status = await ping.statusFor(state.runtimeKind, '127.0.0.1', state.port);
 
   emit('status', {
     serverId: state.serverId,
@@ -610,11 +760,14 @@ async function sampleOnce(state) {
     startedAt: state.startedAt,
     readyAt: state.readyAt,
     uptime: Date.now() - state.startedAt,
-    javaMajor: state.javaMajor,
-    javaExe: state.javaExe,
-    javaMatch: state.javaMatch,
-    javaRisk: state.javaRisk,
-    javaSource: state.javaSource,
+    runtimeKind: state.runtimeKind,
+    javaMajor: state.javaInfo?.major ?? 0,
+    javaExe: state.javaExe || '',
+    javaMatch: state.javaInfo?.match || '',
+    javaRisk: Boolean(state.javaInfo?.risk),
+    javaSource: state.javaInfo?.source || '',
+    phpVersion: state.php?.version || '',
+    phpExe: state.php?.exe || '',
     memory: state.memory,
     // the whole process working set: heap, metaspace, thread stacks, Netty's
     // off-heap buffers. Always larger than heapUsedMb, and that is correct.
@@ -774,11 +927,14 @@ function emitStatusFor(serverId, phase) {
     startedAt: state?.startedAt || 0,
     readyAt: state?.readyAt || 0,
     uptime: state ? Date.now() - state.startedAt : 0,
-    javaMajor: state?.javaMajor ?? 0,
+    javaMajor: state?.javaInfo?.major ?? 0,
     javaExe: state?.javaExe || '',
-    javaMatch: state?.javaMatch || 'none',
-    javaRisk: Boolean(state?.javaRisk),
-    javaSource: state?.javaSource || 'auto',
+    javaMatch: state?.javaInfo?.match || 'none',
+    javaRisk: Boolean(state?.javaInfo?.risk),
+    javaSource: state?.javaInfo?.source || 'auto',
+    runtimeKind: state?.runtimeKind || 'none',
+    phpVersion: state?.php?.version || '',
+    phpExe: state?.php?.exe || '',
     memory: state?.memory || null,
     ramMb: 0,
     port: state?.port || 0,
@@ -799,11 +955,14 @@ function publicStatus(state) {
     pid: state.child.pid,
     startedAt: state.startedAt,
     uptime: 0,
-    javaMajor: state.javaMajor,
-    javaExe: state.javaExe,
-    javaMatch: state.javaMatch,
-    javaRisk: state.javaRisk,
-    javaSource: state.javaSource,
+    javaMajor: state.javaInfo?.major ?? 0,
+    javaExe: state.javaExe || '',
+    javaMatch: state.javaInfo?.match || '',
+    javaRisk: Boolean(state.javaInfo?.risk),
+    javaSource: state.javaInfo?.source || '',
+    runtimeKind: state.runtimeKind,
+    phpVersion: state.php?.version || '',
+    phpExe: state.php?.exe || '',
     memory: state.memory,
     port: state.port,
     players: [],
@@ -847,11 +1006,14 @@ function status(serverId) {
     startedAt: state.startedAt,
     readyAt: state.readyAt,
     uptime: Date.now() - state.startedAt,
-    javaMajor: state.javaMajor,
-    javaExe: state.javaExe,
-    javaMatch: state.javaMatch,
-    javaRisk: state.javaRisk,
-    javaSource: state.javaSource,
+    javaMajor: state.javaInfo?.major ?? 0,
+    javaExe: state.javaExe || '',
+    javaMatch: state.javaInfo?.match || '',
+    javaRisk: Boolean(state.javaInfo?.risk),
+    javaSource: state.javaInfo?.source || '',
+    runtimeKind: state.runtimeKind,
+    phpVersion: state.php?.version || '',
+    phpExe: state.php?.exe || '',
     memory: state.memory,
     ramMb: 0,
     port: state.port,
@@ -905,6 +1067,8 @@ module.exports = {
   pruneBackups,
   dryRun,
   buildArgs,
+  launchPlan,
+  warnAboutHeapCeiling,
   clampMemory,
   cleanLine,
   classify,

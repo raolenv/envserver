@@ -23,6 +23,8 @@ tmp/
 /dashboard*.png
 /welcome*.png
 /new-server*.png
+/terms*.png
+/memory*.png
 /preload.restore.js
 
 # editors and OS

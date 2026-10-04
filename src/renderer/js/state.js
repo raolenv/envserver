@@ -15,7 +15,7 @@
  */
 
 import { toast } from './ui/toast.js';
-import { softwareById, softwareSource } from './software.js';
+import { softwareById, softwareSource, softwarePort } from './software.js';
 
 const listeners = new Set();
 
@@ -49,6 +49,8 @@ export const state = {
 
   dataDir: '',
   serversRoot: '',
+  /** the running app's own version, from the main process - never a literal */
+  appVersion: '',
 
   /** @type {Array<object>} */
   servers: [],
@@ -82,12 +84,21 @@ export const state = {
    */
   versions: { list: [], loading: false, error: null, source: '', byType: {} },
   /** what the Versions view shows, following the active server's software */
-  serverVersions: { key: '', list: [], loading: false, error: null, source: '' },
+  serverVersions: { key: '', list: [], loading: false, error: null, source: '', canInstall: true, port: 25565 },
   /** builds of the version being browsed in the Versions view */
   builds: { mcVersion: '', key: '', list: [], loading: false, error: null, meta: null },
 
   /** JVM plan from the main process */
   jvm: { loaded: false, loading: false, error: null, runtimes: [], plan: [], coverage: [], missing: [], autoInstall: true },
+
+  /**
+   * What runs each software, and what this machine has.
+   *
+   * `software` is id -> { kind, label, ... } so a view can say "PHP 8.3" or
+   * "no JVM involved" without re-deriving it, and `php` is the detected list so
+   * Settings can show where PocketMine's runtime came from.
+   */
+  runtime: { loaded: false, software: {}, java: [], php: [], phpMin: '8.1', ports: {} },
 
   versionQuery: '',
   javaFilter: 'all',
@@ -116,6 +127,7 @@ export async function init() {
   state.settings = { ...state.settings, ...(data.settings || {}) };
   state.dataDir = data.dataDir || '';
   state.serversRoot = data.serversDir || '';
+  state.appVersion = data.appVersion || '';
   state.onboarded = Boolean(data.settings?.onboarded);
 
   const list = await window.env.servers.list();
@@ -129,6 +141,12 @@ export async function init() {
   for (const id of list.runningIds || []) {
     state.statuses[id] = { serverId: id, running: true, phase: 'running' };
   }
+
+  // what runs each software, and whether this machine has a runtime for it.
+  // Deliberately not awaited into the boot path: it probes every java.exe and
+  // php.exe on the machine, which takes a moment, and the first paint must not
+  // wait for it. Views read `state.runtime` and re-render when it lands.
+  loadRuntimeOverview();
 
   state.ready = true;
   // exposed for the smoke test: after a reload the renderer has to come back with
@@ -144,10 +162,58 @@ export async function init() {
   // the nav by label text is not reliable: the label carries a count when one is
   // running, and a software without the capability has no tab to click at all
   window.__envSetView = setView;
+  // the whole store, for probes. A dynamic `import()` is a parse error in the
+  // inline script `executeJavaScript` runs probes in, and guessing at the DOM
+  // instead of reading the state is how a probe ends up reporting the absence of
+  // the very thing it was written to look for
+  window.__envState = state;
   emit('init');
 
   if (state.activeId) await selectServer(state.activeId, { silent: true });
   if (window.__envForceCreate) state.homeCreating = true;
+}
+
+/**
+ * Ask main what runs each software and whether this machine has it.
+ *
+ * Cheap enough to call on demand and cheap enough to call at boot, but it probes
+ * every `java.exe` and `php.exe` it can find, so failures are swallowed: a view
+ * that wanted this information falls back to the software table, which already
+ * knows the runtime *kind*, and nobody is left with an error banner about a
+ * runtime they were not going to use.
+ */
+export async function loadRuntimeOverview() {
+  try {
+    const res = await window.env.runtime.overview();
+    if (!res?.ok) return state.runtime;
+    state.runtime = {
+      loaded: true,
+      software: res.software || {},
+      java: res.java || [],
+      php: res.php || [],
+      phpMin: res.phpMin || '8.1',
+      ports: res.ports || {},
+    };
+    emit('runtime');
+  } catch {
+    /* the software table is the fallback; see above */
+  }
+  return state.runtime;
+}
+
+/**
+ * Point EnvServer at a specific php.exe, or pass '' to auto-detect again.
+ *
+ * A pin is stored rather than probed on every start so a machine with two PHP
+ * installs behaves the same way twice in a row.
+ */
+export async function setPhpPath(phpPath) {
+  const res = await window.env.runtime.setPhpPath(phpPath || '');
+  if (!res?.ok) return res;
+  state.settings = { ...state.settings, phpPath: res.runtime?.exe || '' };
+  await loadRuntimeOverview();
+  emit('settings');
+  return res;
 }
 
 /** Keep the active pointer on a server that still exists. */
@@ -323,21 +389,27 @@ export async function openServer(id, view = 'dashboard') {
  * Spigot and CraftBukkit list the same Minecraft versions Paper does, and the
  * disk cache behind them already survives being offline.
  *
- * @param {'paper'|'folia'|'purpur'|'vanilla'} key
+ * The *software id* is what gets sent - main resolves which API answers for it,
+ * and knows that Spigot's versions are real but not downloadable - while the
+ * `source` is what gets cached, so those three share one entry.
+ *
+ * @param {string} softwareId e.g. 'paper', 'vanilla', 'bedrock', 'pocketmine'
  */
-async function fetchVersions(key, refresh = false) {
+async function fetchVersions(softwareId, refresh = false) {
+  const key = softwareSource(softwareId);
   const hit = state.versions.byType[key];
   if (hit?.list?.length && !refresh) return hit;
 
-  let res;
-  if (key === 'vanilla') res = await window.env.vanilla.versions(refresh);
-  else if (key === 'purpur') res = await window.env.purpur.versions(refresh);
-  else res = await window.env.paper.versions(refresh, key);
+  const res = await window.env.catalog.versions(softwareId, refresh);
 
   const entry = {
     list: res?.versions || [],
     error: res?.error || null,
     source: res?.source || '',
+    // Spigot and CraftBukkit list real versions EnvServer cannot download, so
+    // the Versions view has to say which of the two it is
+    canInstall: res?.canInstall !== false,
+    port: res?.port || softwarePort(softwareId),
   };
   state.versions.byType[key] = entry;
   return entry;
@@ -350,7 +422,7 @@ export async function refreshVersions(refresh = false) {
   state.versions.loading = true;
   emit('versions');
 
-  const entry = await fetchVersions(key, refresh);
+  const entry = await fetchVersions(state.createType, refresh);
 
   state.versions.loading = false;
   state.versions.list = entry.list;
@@ -374,9 +446,17 @@ export async function refreshServerVersions(type, refresh = false) {
   state.serverVersions = { ...state.serverVersions, key, loading: true };
   emit('versions');
 
-  const entry = await fetchVersions(key, refresh);
+  const entry = await fetchVersions(type, refresh);
 
-  state.serverVersions = { key, loading: false, list: entry.list, error: entry.error, source: entry.source };
+  state.serverVersions = {
+    key,
+    loading: false,
+    list: entry.list,
+    error: entry.error,
+    source: entry.source,
+    canInstall: entry.canInstall,
+    port: entry.port,
+  };
   emit('versions');
 
   return !entry.error;
@@ -391,13 +471,10 @@ export async function loadBuilds(mcVersion, refresh = false) {
   state.builds = { mcVersion, key: sw.source, list: [], loading: true, error: null, meta: state.builds.meta };
   emit('builds');
 
-  // Mojang ships exactly one jar per release: there is no build list to show
-  const res =
-    sw.source === 'vanilla'
-      ? { ok: true, builds: [], meta: { javaMajor: sw.source === 'vanilla' ? 0 : 0 } }
-      : sw.source === 'purpur'
-        ? await window.env.purpur.builds(mcVersion, refresh)
-        : await window.env.paper.builds(mcVersion, refresh, sw.source);
+  // one call for every software. Mojang's Java jar, Mojang's Bedrock zip and
+  // PocketMine's phar each publish exactly one archive per version, so their
+  // "build list" is a single entry that the Versions view renders as "latest".
+  const res = await window.env.catalog.builds(sw.id, mcVersion, refresh);
 
   state.builds.loading = false;
   if (res?.ok) {

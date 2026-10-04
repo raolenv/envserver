@@ -55,31 +55,37 @@ contextBridge.exposeInMainWorld('env', {
     openFolder: (id) => ipcRenderer.invoke('servers:open-folder', { id }),
   },
 
-  paper: {
-    versions: (refresh, project) => ipcRenderer.invoke('paper:versions', { refresh: Boolean(refresh), project: project || 'paper' }),
-    builds: (mcVersion, refresh, project) => ipcRenderer.invoke('paper:builds', { mcVersion, refresh: Boolean(refresh), project: project || 'paper' }),
+  /**
+   * Server software catalogues: what versions exist, and installing one.
+   *
+   * This replaces three namespaces - `paper`, `purpur`, `vanilla` - that the
+   * renderer had to branch on, with one that takes a software id. Nine software
+   * now cost one code path instead of one each, which is the only reason Bedrock
+   * was affordable to add at all.
+   *
+   * `software` is the id from software.js: 'paper', 'folia', 'purpur', 'vanilla',
+   * 'spigot', 'bukkit', 'custom', 'bedrock', 'pocketmine'.
+   */
+  catalog: {
+    versions: (software, refresh) =>
+      ipcRenderer.invoke('catalog:versions', { software: software || 'paper', refresh: Boolean(refresh) }),
+    builds: (software, mcVersion, refresh) =>
+      ipcRenderer.invoke('catalog:builds', { software: software || 'paper', mcVersion, refresh: Boolean(refresh) }),
     /** `opts.jobId` tags the progress events so several installs can run at once */
-    install: (opts) => ipcRenderer.invoke('paper:install', opts || {}),
-    removeJar: (id) => ipcRenderer.invoke('paper:remove-jar', { id }),
+    install: (opts) => ipcRenderer.invoke('catalog:install', opts || {}),
+    /** remove the server files; the world is always left alone */
+    remove: (serverId) => ipcRenderer.invoke('catalog:remove', { serverId }),
   },
 
   /**
-   * Purpur, a Paper fork with its own API.
+   * What runs each software, and whether this machine has it.
    *
-   * Split out from `paper` rather than bolted on as another `project`, because
-   * Purpur publishes build *numbers* only - the download URL has to be built
-   * from the version and the build - and there is no per-build metadata.
+   * `software` is a map of id -> { kind: 'java'|'php'|'none', label, eula, ... }
+   * so a view can say "PHP 8.3" or "no JVM involved" without re-deriving it.
    */
-  purpur: {
-    versions: (refresh) => ipcRenderer.invoke('purpur:versions', { refresh: Boolean(refresh) }),
-    builds: (mcVersion, refresh) => ipcRenderer.invoke('purpur:builds', { mcVersion, refresh: Boolean(refresh) }),
-    install: (opts) => ipcRenderer.invoke('purpur:install', opts || {}),
-  },
-
-  /** the official Mojang server, from piston-meta */
-  vanilla: {
-    versions: (refresh) => ipcRenderer.invoke('vanilla:versions', { refresh: Boolean(refresh) }),
-    install: (opts) => ipcRenderer.invoke('vanilla:install', opts || {}),
+  runtime: {
+    overview: () => ipcRenderer.invoke('runtime:overview'),
+    setPhpPath: (phpPath) => ipcRenderer.invoke('php:set-path', { phpPath }),
   },
 
   java: {

@@ -58,14 +58,22 @@ function serializeProperties(order, values) {
   return `#Minecraft server properties\n#${new Date().toString()}\n${body}\n`;
 }
 
+/**
+ * Parse a `server.properties`, and say whether there was one to parse.
+ *
+ * `missing` matters: a server that has never started has no file at all, and a
+ * view that cannot tell that apart from a file with every key blank will offer
+ * twenty empty inputs and an "Everything else" panel reading "No other keys are
+ * set" - describing an empty file rather than an absent one.
+ */
 function readProperties(file) {
   let text = '';
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch {
-    return { order: [], values: {} };
+    return { order: [], values: {}, missing: true };
   }
-  return parseProperties(text);
+  return { ...parseProperties(text), missing: false };
 }
 
 function writeProperties(file, order, values) {
@@ -104,9 +112,24 @@ function writeEula(file, accepted) {
  * not model. The values are vanilla's own defaults, so nothing behaves oddly
  * before the user has touched anything.
  */
-function seedDefaults(serverId, { port = 25565, motd = 'An EnvServer server' } = {}) {
+function seedDefaults(serverId, { port = 25565, motd = 'An EnvServer server', software = 'paper' } = {}) {
   const file = paths.serverProperties(serverId);
   if (paths.exists(file)) return { seeded: false };
+
+  /**
+   * Only Java software gets a seeded file.
+   *
+   * Every key below is a Java server property: `gamemode`, `view-distance`,
+   * `simulation-distance`, `spawn-protection` and the rest do not exist in Mojang's
+   * Bedrock server, which has its own key set and writes the file itself on first
+   * run. Seeding a Bedrock server with Java keys would produce a file full of
+   * settings the software ignores, and a Config tab full of edits that silently do
+   * nothing - which is worse than an empty tab.
+   *
+   * PocketMine-MP does use `server.properties`, but it reads it at startup and
+   * fills in its own defaults, so writing them from here would only guess.
+   */
+  if (!isJavaSoftware(software)) return { seeded: false, skipped: 'non-java' };
 
   const values = {
     'server-ip': '',
@@ -145,6 +168,19 @@ function seedDefaults(serverId, { port = 25565, motd = 'An EnvServer server' } =
 
   writeProperties(file, Object.keys(values), values);
   return { seeded: true, file };
+}
+
+/**
+ * Does this software use a Java `server.properties`?
+ *
+ * Kept as a literal set rather than requiring `runtime.js`: config.js is the one
+ * service that must stay requireable on its own, and the answer is a property of
+ * the software rather than of how it is launched.
+ */
+const JAVA_SOFTWARE = new Set(['paper', 'folia', 'purpur', 'vanilla', 'spigot', 'bukkit', 'custom']);
+
+function isJavaSoftware(software) {
+  return JAVA_SOFTWARE.has(String(software || '').toLowerCase());
 }
 
 /* ---------------------------- player lists ----------------------------- */

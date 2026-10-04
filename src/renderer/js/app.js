@@ -42,6 +42,7 @@ const NAV = [
   { id: 'versions', label: 'Versions', icon: 'layers', eyebrow: 'Library', title: 'Server versions', sub: 'Every Minecraft version this software publishes a build for.', server: true },
   { id: 'plugins', label: 'Plugins', icon: 'puzzle', eyebrow: 'Content', title: 'Plugins', sub: 'What is in the plugins folder right now.', server: true, needs: 'plugins' },
   { id: 'settings', label: 'Settings', icon: 'gear', eyebrow: 'App', title: 'Settings', sub: 'Memory, Java, folders and backups.' },
+  { id: 'about', label: 'Terms', icon: 'shield', eyebrow: 'App', title: 'Terms', sub: 'The terms EnvServer is released under.' },
 ];
 
 const RENDERERS = {
@@ -52,6 +53,7 @@ const RENDERERS = {
   versions: renderVersions,
   plugins: renderPlugins,
   settings: renderSettings,
+  about: renderAbout,
 };
 
 const ACTIONS = {
@@ -62,6 +64,7 @@ const ACTIONS = {
   versions: versionsActions,
   plugins: pluginsActions,
   settings: settingsActions,
+  about: aboutActions,
 };
 
 /** Teardown per view, run when another view takes over the body. */
@@ -136,7 +139,10 @@ function renderSidebar() {
       h(
         'div.sidebar__brand-text',
         h('div.sidebar__brand-name', { text: 'EnvServer' }),
-        h('div.sidebar__brand-ver', { text: 'v1.0.0' })
+        // from the store, not a literal. It was pinned at v1.0.0 through three releases,
+        // so every screenshot of the sidebar - the one image every reader sees
+        // first - claimed a version that no longer existed
+        h('div.sidebar__brand-ver', { text: `v${state.appVersion || '?'}` })
       )
     ),
     inServer && record
@@ -201,6 +207,14 @@ let paintedView = '';
  * head as well - it was drawn for the view we just left.
  */
 function guardView() {
+  // The terms are a condition of use, not a preference: until they are accepted
+  // the app only shows that screen, and the terms themselves stay reachable
+  // afterwards so nobody has to take the app's word for what they agreed to.
+  if (!state.settings.termsAccepted && state.view !== 'about') {
+    state.view = 'about';
+    return true;
+  }
+
   const blocked = NAV.find((item) => item.id === state.view && item.needs && !softwareSupports(activeServer()?.type, item.needs));
   if (!blocked) return false;
 

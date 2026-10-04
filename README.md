@@ -1,10 +1,12 @@
 # EnvServer
 
 A Minecraft server manager for Windows. It runs the server locally, in a folder on
-your own machine, from a single `.exe` - and it picks the right Java version for the
-Minecraft version you chose, downloading it if you do not have it.
+your own machine, from a single `.exe` - and it works out what each server needs to
+run: the right Java version for a Java server, or nothing at all for Mojang's
+Bedrock one.
 
-PaperMC, Folia, Purpur, Vanilla, Spigot, CraftBukkit, or any jar you already have.
+PaperMC, Folia, Purpur, Vanilla, Spigot, CraftBukkit, PocketMine-MP, Mojang's
+Bedrock Dedicated Server, or any jar you already have.
 
 ![EnvServer dashboard](docs/screenshots/dashboard.png)
 
@@ -12,13 +14,15 @@ PaperMC, Folia, Purpur, Vanilla, Spigot, CraftBukkit, or any jar you already hav
 
 - **Runs the server locally** - one folder per server, with the world, plugins, logs
   and config where you would expect them. Nothing is uploaded, no account to make.
-- **Seven kinds of server software** - PaperMC, Folia, Purpur, Vanilla (Mojang),
-  Spigot, CraftBukkit and Custom JAR. The version list is complete for each, and the
-  UI adapts to what the software can actually do: a vanilla server has no Plugins tab
-  because the official jar has no plugin loader.
-- **Installs in the background** - a 50 MB jar or a 200 MB JDK never blocks the UI.
-  The sidebar shows every job with real progress, you can browse other views while
-  it downloads, and closing the window hides to the tray so the work continues.
+- **Java and Bedrock** - seven Java servers plus PocketMine-MP and Mojang's Bedrock
+  Dedicated Server. Every one has a complete version list, the installer downloads all
+  of them, and the UI adapts to what the software can actually do: a vanilla server
+  has no Plugins tab because the official jar has no plugin loader, and a Bedrock
+  server is never asked about Java.
+- **Installs in the background** - a 50 MB jar, a 200 MB JDK or a Bedrock zip never
+  blocks the UI. The sidebar shows every job with real progress, you can browse other
+  views while it downloads, and closing the window minimises to the taskbar so the
+  work continues.
 - **Matches Java to the release** - see below. It downloads Eclipse Temurin if you do
   not have a suitable runtime.
 - **Live console** - real stdout/stderr coloured by severity, plus a command box with
@@ -32,19 +36,81 @@ PaperMC, Folia, Purpur, Vanilla, Spigot, CraftBukkit, or any jar you already hav
   for a newer release and offers to install it, or to reinstall an older version.
   Your servers and settings are never in the application folder, so neither can lose
   them.
-- **Status** - player list, uptime, the actual JVM heap usage, and the server MOTD read
-  from a genuine Server List Ping rather than guessed from the log.
+- **Status** - player list, uptime, the actual JVM heap usage, and the server MOTD
+  read from a genuine protocol query rather than guessed from the log: the Java
+  Server List Ping for Java software, and RakNet over UDP for Bedrock.
+
+## Runtimes: Java, PHP, and nothing
+
+Each server is launched in one of three ways, and the app knows which:
+
+| Software                                                              | What runs it                                             | Port   |
+| --------------------------------------------------------------------- | -------------------------------------------------------- | ------ |
+| PaperMC, Folia, Purpur, Vanilla, Spigot, CraftBukkit, Custom JAR      | `java -jar paper.jar`                                     | 25565  |
+| PocketMine-MP                                                         | `php -d memory_limit=… PocketMine-MP.phar`                | 19132  |
+| Bedrock Dedicated Server                                              | `bedrock_server.exe`, native, and no arguments at all    | 19132  |
+
+That table is the reason the UI is worded the way it is. A PocketMine server is told
+it needs **PHP**, and never told to install Java. A Bedrock server is told it needs
+**nothing**, and its dashboard says "no JVM needed" in green instead of showing a red
+"no Java" that would describe a problem it does not have.
+
+- **Java** is found automatically, matched per Minecraft version, and downloaded on
+  start if the machine has nothing suitable. See
+  [Java matching](#java-matching-per-minecraft-version).
+- **PHP** - PocketMine-MP only, 8.1 or newer - is **detected, never downloaded.**
+  PHP for Windows is not one redistributable binary: each build comes from the PHP
+  project or a third party under that publisher's licence, so shipping one inside
+  this app is not this project's to do. EnvServer finds what is already installed,
+  probes every candidate by running it, and refuses to start PocketMine with a
+  specific message pointing at php.org if there is none. Settings gains a **PHP
+  runtime** panel as soon as a PocketMine server exists - it lists what was found and
+  where, and takes a path to pin a particular one.
+- **Nothing** is the honest answer for Bedrock. `bedrock_server.exe` is a native
+  Windows program, so there is no JVM to choose, download or report. `nogui` is not
+  passed either: it is a Java habit that Bedrock would ignore.
+
+**Bedrock listens on 19132, not 25565**, and Bedrock clients speak **RakNet over
+UDP**. New Bedrock servers are created on 19132 and the dashboard says so. The
+status monitor asks each server with the protocol it actually speaks, so a Bedrock
+player's count and MOTD are real rather than permanently zero - sending the Java
+status ping at a RakNet server gets nothing back, ever.
+
+Bedrock's version list is read from Mojang's own server download page and the server
+itself is downloaded from there, so it is Mojang's file under Mojang's terms;
+PocketMine-MP versions come from the pmmp GitHub releases. **Neither is bundled with
+this app**, and the Config tab says so rather than offering switches the software
+ignores. Bedrock has no `eula.txt` - its terms are accepted on Mojang's download page
+- so it is not sent to a file that will never exist.
+
+## First run
+
+![Welcome](docs/screenshots/welcome.png)
+
+One question: where server folders should live. Take the default or pick a folder -
+that is the whole setup. The server software, the Java or PHP runtime it needs and
+the EULA are handled by the app when they are needed, not as steps to walk through up
+front.
+
+Then the terms, which have to be accepted before the app does anything.
+
+![Terms](docs/screenshots/terms.png)
+
+They stay under **Terms** in the sidebar afterwards, so nobody has to take the app's
+word for what they agreed to, and can withdraw.
 
 ## Screenshots
 
 | | |
 | --- | --- |
-| ![Welcome](docs/screenshots/welcome.png) | ![New server](docs/screenshots/new-server.png) |
-| The first-run screen. It asks where server folders should live, and nothing else. | Creating a server: a name, the software, and the full Minecraft version list for it. Memory is worked out from the machine, not guessed at. |
-| ![Console](docs/screenshots/console.png) | ![Config](docs/screenshots/config.png) |
-| The console is the real process output, coloured by severity, with a command box. | `server.properties`, the EULA, and the whitelist/ops/ban lists - which update while the server runs. |
-| ![Versions](docs/screenshots/versions.png) | ![Settings](docs/screenshots/settings.png) |
-| Every build of the server's own software, per Minecraft version. | Memory, Java runtimes, folders, backups and the per-server overrides. |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Console](docs/screenshots/console.png) |
+| The dashboard: badges, live stats, players, and what to do next. | The console is the real process output, coloured by severity, with a command box. |
+| ![New server](docs/screenshots/new-server.png) | ![Versions](docs/screenshots/versions.png) |
+| A name, the software - Java and Bedrock listed separately - and the full version list for it. The line under the dropdown says what will run it, and which port. | Every build of the server's own software, per Minecraft version. |
+| ![Config](docs/screenshots/config.png) | ![Plugins](docs/screenshots/plugins.png) |
+| `server.properties`, the EULA, and the whitelist/ops/ban lists - which update while the server runs. | Add jars from Explorer, see what is there, remove them. |
+| ![Settings](docs/screenshots/settings.png) | ![Terms](docs/screenshots/terms.png) |
+| Memory, Java runtimes, folders, backups and the per-server overrides - plus a PHP panel once a PocketMine server exists. | The terms, readable and withdrawable from the sidebar at any time. |
 
 ## About memory
 
@@ -53,14 +119,16 @@ will still show 700-900 MB in Task Manager, and that is correct: metaspace, the 
 cache, one stack per thread and Paper's off-heap network buffers all live outside the
 heap and are counted against the process. Nothing is being ignored.
 
-So EnvServer reads the heap itself. Where the runtime ships `jcmd` (any JDK, which is
-what it downloads), the dashboard shows **heap used against the heap ceiling** and
-keeps the process total as a separate number with an explanation. It never labels the
+![The memory panel](docs/screenshots/memory.png)
+
+So EnvServer reads the heap itself, with `jcmd GC.heap_info` on the JDK it launched
+the server with. The dashboard shows **heap used against the heap ceiling** and keeps
+the process total as a separate number with an explanation. It never labels the
 process total "max".
 
 New servers are sized from the machine - about half the installed RAM on a clean step.
-If you set a ceiling this machine cannot honour, the dashboard and Settings say so
-instead of leaving the machine to thrash its pagefile.
+If you set a ceiling this machine cannot honour, the dashboard, the memory panel and
+the server's own console say so, instead of leaving the machine to thrash its pagefile.
 
 ## Updates, and going back
 
@@ -136,17 +204,18 @@ npm start -- --dev # launch with devtools
 ## Verify it
 
 ```bash
-npm test           # syntax + module/bridge graph + 58 unit tests, no network
+npm test           # syntax + module/bridge graph + 82 unit tests, no network
 npm run smoke      # boots the real app, renders every view, hit-tests the chrome
 npm run e2e        # downloads a JDK and a real server jar, starts it, pings it
 npm run shot       # screenshot the running app to shot.png
+npm run docs       # re-captures docs/screenshots/ into focused crops
 ```
 
 The three layers exist because each catches a different class of bug:
 
 | Command        | Catches                                                                 |
 | -------------- | ----------------------------------------------------------------------- |
-| `npm test`     | logic. Java matching, the zip reader/writer, property parsing, varint framing, log classification, settings validation, and every import/export/bridge seam. |
+| `npm test`     | logic. Java matching, the runtime table, the launch command line per runtime, Bedrock version parsing and numeric version order, PocketMine release payloads, PHP compatibility and its explanation, the RakNet ping packet, the zip reader/writer, property parsing, varint framing, log classification, settings validation, and every import/export/bridge seam. |
 | `npm run smoke`| the app itself. Every view rendered in a real Electron window, every nav item clicked, the console painted, nothing invisible covering the UI, zero renderer errors. |
 | `npm run e2e`  | integration. A real JVM, a real world, a real status ping.               |
 
@@ -184,14 +253,19 @@ src/
     services/
       paths.js       on-disk layout, and path-segment rejection
       net.js         fetch + JSON, resumable download with SHA-256
+      catalog.js     one dispatch for every software: versions, builds, install, remove
+      runtime.js     what runs each software (java | php | none), and the preflight
+      php.js         PHP discovery, probing and the "why is it missing" explanation
       paper.js       the v3 Paper API at fill.papermc.io, with a disk cache
       purpur.js      the Purpur API at api.purpurmc.org
       vanilla.js     piston-meta.mojang.com
+      bedrock.js     Mojang's Bedrock server: version list from the download page
+      pocketmine.js  PocketMine-MP releases from the pmmp GitHub releases
       updater.js     GitHub releases: check, install, and which versions ran here
       java.js        runtime discovery, per-version matching, Temurin download
-      server.js      the JVM process: command line, spawn, console, monitor
+      server.js      the process: command line per runtime, spawn, console, monitor
       config.js      server.properties, eula, ops/whitelist/bans, plugins
-      ping.js        the Minecraft Server List Ping protocol
+      ping.js        Server List Ping (Java) and RakNet unconnected ping (Bedrock)
       mojang.js      public profile lookup, for real whitelist UUIDs
       zip.js         zip reader + writer with no dependency
   renderer/
@@ -221,13 +295,31 @@ tools/
   gen-assets.js  procedural icon generator
   shots.js     capture the README screenshots into docs/screenshots
   probe*.js    layout/behaviour probes, run with `electron . --probe=tools/probe.js`
+               probe-runtime.js is the Bedrock one: it creates a PocketMine and a
+               Bedrock server and checks what the app says about each.
 ```
 
 ## Architecture notes
 
 **Everything talks to IPC, never to the DOM.** The renderer only knows about
-`window.env` (see `preload.js`). That is the seam where every Paper, Adoptium and
-Mojang call lives, and the reason the UI can be tested without any of it.
+`window.env` (see `preload.js`). That is the seam where every Paper, Adoptium,
+Mojang, PHP and GitHub call lives, and the reason the UI can be tested without any
+of it.
+
+**One catalogue for nine software.** `paper:*`, `purpur:*` and `vanilla:*` were three
+namespaces that grew a renderer branch each, and Spigot and CraftBukkit had no install
+path at all because there was no fourth namespace to put them in. They are now
+`catalog:versions`, `catalog:builds`, `catalog:install` and `catalog:remove`, with the
+software id as an argument, and `catalog.js` routes it. Adding Bedrock cost two new
+services and no new IPC namespace, no new preload surface and no new renderer branch.
+
+**Two tables on purpose, with a test between them.** `runtime.js` owns the launch
+facts - the executable, the arguments, the readiness pattern, whether there is an
+EULA - and the renderer's `software.js` owns the wording and the icons. A renderer
+view has to be able to say "needs PHP 8.1" synchronously while rendering, which it
+cannot do with an IPC round trip. So the two tables are separate, and a unit test
+asserts they agree on every software id and on every entry point it names - drift
+there is how software ends up creatable but unstartable.
 
 **`tools/graph.js` checks the seams a syntax check cannot.** It executes
 `preload.js` against a stub electron to get the real exposed surface, then verifies
@@ -268,7 +360,16 @@ entry name is checked so a crafted archive cannot escape the target directory.
 
 - **No bundled Mojang assets.** The app icon and every UI icon are generated or
   authored here. Shipping Mojang's textures, sounds or fonts inside a
-  redistributable `.exe` is not something this project will do.
+  redistributable `.exe` is not something this project will do. The Bedrock server is
+  downloaded from Mojang when you ask for it, and is not packaged.
+- **No bundled PHP.** PHP for Windows is not one redistributable binary, so EnvServer
+  finds the one you already have instead of shipping someone else's build. That is
+  the one runtime PocketMine-MP needs and cannot come with.
+- **No code signing.** The executable carries `RaolENV` as its company, so Windows
+  shows a real publisher rather than a blank one. That is *not* the same as a signed
+  build: a code-signing certificate is what removes the "Windows protected your PC"
+  SmartScreen prompt, and no certificate is available here. If that prompt is the
+  problem, buy one; nothing in this app's configuration can stand in for it.
 - **No Fabric or NeoForge loader support.** Those need their own profile endpoints
   and library resolution.
 - **No world or player editing.** Worlds are the server's own files; opening them in
@@ -281,5 +382,8 @@ entry name is checked so a crafted archive cannot escape the target directory.
 ## Legal
 
 Not affiliated with Mojang or Microsoft. Minecraft is a trademark of Mojang AB.
-Paper is built by the PaperMC project. Java runtimes are Eclipse Temurin from the
-Adoptium project. No Mojang assets are redistributed by this project.
+Paper is built by the PaperMC project, PocketMine-MP by the PocketMine project. Java
+runtimes are Eclipse Temurin from the Adoptium project. The Bedrock server is
+downloaded from Mojang at the user's request rather than redistributed, and PHP is
+detected on the user's machine rather than shipped. No Mojang assets are
+redistributed by this project.

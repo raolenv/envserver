@@ -3,7 +3,7 @@ import { icon } from '../icons.js';
 import { bytes, dateTime } from '../fmt.js';
 import { state, activeServer, visibleVersions, refreshServerVersions, loadBuilds, setView, emit } from '../state.js';
 import { installSoftware, jobForVersion, activeJobs, jarJobForServer } from '../jobs.js';
-import { softwareById, softwareLabel } from '../software.js';
+import { softwareById, softwareLabel, runtimeEntry, runtimeNoun, softwareRuntime, softwarePort } from '../software.js';
 import { badge, iconBadge } from './dashboard.js';
 import { toast } from '../ui/toast.js';
 
@@ -119,7 +119,16 @@ function buildsPanel(mcVersion, record) {
         h('div.panel__title', icon('package'), `Builds for ${mcVersion}`),
         h(
           'div.row',
-          meta?.javaMajor ? badge(`needs Java ${meta.javaMajor}`, 'info') : null,
+          // the runtime badge follows the software. "needs Java 21" on a
+          // Bedrock server would describe a decision nobody has to make, and
+          // "needs PHP 8.1" is the only useful thing to say on PocketMine
+          softwareRuntime(record?.type || 'paper') === 'php'
+            ? badge(`needs PHP ${state.runtime?.phpMin || '8.1'}`, 'info')
+            : softwareRuntime(record?.type || 'paper') === 'none'
+              ? badge('native binary', 'ok')
+              : meta?.javaMajor
+                ? badge(`needs Java ${meta.javaMajor}`, 'info')
+                : null,
           meta?.supportStatus === 'SUPPORTED' ? badge('supported', 'ok') : meta?.supportStatus === 'UNSUPPORTED' ? badge('unsupported', 'warn') : null,
           h('button.btn.btn--sm.btn--ghost', { type: 'button', disabled: builds.loading, onClick: () => loadBuilds(mcVersion, true) }, icon('refresh'), 'Refresh')
         )
@@ -129,7 +138,15 @@ function buildsPanel(mcVersion, record) {
         builds.loading ? h('div.empty', loader('lg'), 'Loading builds...') : null,
         builds.error ? h('div.banner.banner--err', icon('alert'), builds.error) : null,
         !builds.loading && !builds.error && !builds.list.length
-          ? h('div.empty', h('b', { text: 'No downloadable builds' }), `${label} publishes exactly one server jar for this version, so there is nothing to choose from.`)
+          ? h(
+              'div.empty',
+              h('b', { text: `No ${runtimeNoun(sw.id)} published yet` }),
+              sw.runtime === 'none'
+                ? `Mojang may not have published a Bedrock server build for ${mcVersion} yet. Pick another version above.`
+                : sw.runtime === 'php'
+                  ? `PocketMine-MP has not published a phar for ${mcVersion} yet. Pick another version above.`
+                  : `${label} publishes exactly one server jar per version, so there is no build number to choose - use Install below.`
+            )
           : null,
         !builds.loading && builds.list.length
           ? h(
@@ -172,7 +189,7 @@ function buildsPanel(mcVersion, record) {
   );
 }
 
-/* ------------------------------ installed jar --------------------------- */
+/* ---------------------------- installed files --------------------------- */
 
 function installedPanel() {
   const record = activeServer();
@@ -180,11 +197,18 @@ function installedPanel() {
 
   const detail = state.detail;
   const job = jarJobForServer(record.id);
-  const label = softwareLabel(record.type).replace(/\s*\(.*\)$/, '');
+  const sw = softwareById(record.type);
+  const label = sw.label.replace(/\s*\(.*\)$/, '');
 
-  if (!detail?.jar?.installed) {
+  // "the file this software runs" rather than "the jar": for Bedrock it is a
+  // native exe unpacked from a zip, and for PocketMine a phar. Calling it a jar
+  // everywhere would be wrong in a place a user will read.
+  const entry = runtimeEntry(record.type);
+  const noun = runtimeNoun(record.type);
+
+  if (!detail?.files?.installed) {
     if (job) return h('div.banner.banner--ok', loader('sm'), `Downloading ${label} ${job.mcVersion} into "${record.name}" - you can keep using the app.`);
-    return h('div.banner', icon('download'), h('span', h('b', { text: `"${record.name}" has no jar yet.` }), ' Pick a version below and hit Install.'));
+    return h('div.banner', icon('download'), h('span', h('b', { text: `"${record.name}" has no ${noun} yet.` }), ' Pick a version below and hit Install.'));
   }
 
   return h(
@@ -196,10 +220,19 @@ function installedPanel() {
         'div.row.row--wrap',
         badge(`${label} ${record.mcVersion}`, 'info'),
         record.build ? badge(`build ${record.build}`) : null,
-        badge(bytes(detail.jar.size)),
-        detail.java.resolved
-          ? badge(`Java ${detail.java.resolved.major}`, detail.java.resolved.match === 'exact' ? 'ok' : 'warn')
-          : badge('Java will download on start', 'warn'),
+        badge(bytes(detail.files.size)),
+        // which runtime, reported per software. A Bedrock server shown a "Java
+        // will download on start" badge would be inventing work that does not
+        // exist, so it says what will actually run instead.
+        sw.runtime === 'none'
+          ? badge('no Java needed', 'ok')
+          : sw.runtime === 'php'
+            ? detail.php?.resolved?.ok
+              ? badge(`PHP ${detail.php.resolved.version}`, 'ok')
+              : badge(`needs PHP ${detail.php?.min || '8.1'}`, 'err')
+            : detail.java.resolved
+              ? badge(`Java ${detail.java.resolved.major}`, detail.java.resolved.match === 'exact' ? 'ok' : 'warn')
+              : badge('Java will download on start', 'warn'),
         h('span.grow'),
         h(
           'button.btn.btn--sm.btn--danger',
@@ -208,16 +241,25 @@ function installedPanel() {
             disabled: Boolean(state.status?.running),
             title: state.status?.running ? 'Stop the server first' : 'The world and plugins are kept',
             onClick: async () => {
-              const res = await window.env.paper.removeJar(record.id);
-              if (!res?.ok) return toast(res?.error || 'could not remove the jar', 'err');
+              // the catalogue decides what "remove" means: for Java it deletes
+              // paper.jar, for Bedrock it deletes Mojang's binaries, and for all
+              // of them the world and plugins stay
+              const res = await window.env.catalog.remove(record.id);
+              if (!res?.ok) return toast(res?.error || `could not remove the ${entry}`, 'err');
               toast(`${label} ${record.mcVersion} removed from ${record.name}`, 'info');
             },
           },
           icon('trash'),
-          'Remove jar'
+          sw.runtime === 'none' ? 'Remove server files' : 'Remove ' + noun
         )
       ),
-      h('div.field__hint', { style: { marginTop: '10px' }, text: 'Installing a different version replaces the jar in place. The world is kept.' })
+      h('div.field__hint', {
+        style: { marginTop: '10px' },
+        text:
+          sw.runtime === 'none'
+            ? 'Installing a different version replaces the server files in place. Your world and its permissions are kept.'
+            : 'Installing a different version replaces the file in place. The world is kept.',
+      })
     )
   );
 }

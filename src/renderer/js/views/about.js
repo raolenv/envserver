@@ -93,7 +93,8 @@ export function termsBody({ locked }) {
 
     h(
       'p.terms__meta',
-      'EnvServer 1.0.0 - not affiliated with Mojang Studios or Microsoft.'
+      // from the running app, so it cannot drift the way a typed-in literal does
+      `EnvServer ${state.appVersion || '?'} - not affiliated with Mojang Studios or Microsoft.`
     )
   );
 }
