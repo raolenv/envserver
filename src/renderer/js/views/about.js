@@ -167,26 +167,17 @@ export function renderAbout(host) {
       { class: locked ? 'banner--warn' : '' },
       icon(locked ? 'alert' : 'check'),
       h(
-        'span',
+        'div.row',
+        { style: { alignItems: 'center', gap: '12px', flexWrap: 'wrap' } },
+        h(
+          'span.grow',
+          locked
+            ? 'Read this before using EnvServer. Nothing is downloaded and nothing is changed until you agree.'
+            : 'The terms EnvServer is released under. Agreeing to them is recorded in this app\'s settings.'
+        ),
         locked
-          ? 'Read this before using EnvServer. Nothing is downloaded and nothing is changed until you agree.'
-          : 'The terms EnvServer is released under. Agreeing to them is recorded in this app\'s settings.'
-      )
-    ),
-    termsBody({ locked }),
-    h(
-      'div.terms__foot',
-      locked
-        ? h(
-            'div.row',
-            h('button.btn.btn--primary.btn--lg', { type: 'button', onClick: accept }, icon('check'), 'I understand and agree'),
-            h('a', { href: 'https://github.com/raolenv' }, 'Read the source')
-          )
-        : h(
-            'div.row',
-            h('a', { href: 'https://github.com/raolenv' }, 'Source and licence'),
-            h('span.grow'),
-            h(
+          ? h('button.btn.btn--primary', { type: 'button', onClick: accept }, icon('check'), 'I understand and agree')
+          : h(
               'button.btn.btn--sm.btn--ghost',
               {
                 type: 'button',
@@ -204,8 +195,9 @@ export function renderAbout(host) {
               icon('refresh'),
               'Withdraw agreement'
             )
-          )
-    )
+      )
+    ),
+    termsBody({ locked })
   );
 }
 
